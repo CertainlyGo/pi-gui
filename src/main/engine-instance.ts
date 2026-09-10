@@ -258,6 +258,22 @@ export class EngineInstance {
     return this.peer.request({ type: "set_thinking_level", level });
   }
 
+  /** 加载另一个 session 文件（可能被扩展的 before_switch 处理器取消）。 */
+  async switchSession(sessionPath: string): Promise<{ cancelled: boolean }> {
+    const response = await this.peer.request({ type: "switch_session", sessionPath });
+    const data = (response as Record<string, unknown>)["data"];
+    const cancelled =
+      data !== null && typeof data === "object"
+        ? (data as Record<string, unknown>)["cancelled"] === true
+        : false;
+    return { cancelled };
+  }
+
+  /** 回复扩展的对话框请求（Extension UI Protocol）。 */
+  respondExtensionUi(id: string, response: Record<string, unknown>): void {
+    this.peer.respondToExtensionUi({ type: "extension_ui_response", id, ...response });
+  }
+
   #handleStdout(chunk: string): void {
     const outcome = this.#decoder.push(chunk);
     for (const error of outcome.errors) this.#options.onWarning?.(error);

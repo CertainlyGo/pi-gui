@@ -26,6 +26,21 @@ const api: PiGuiApi = {
   listCredentials: () => ipcRenderer.invoke("auth:list"),
   setCredential: (provider, key) => ipcRenderer.invoke("auth:set", provider, key),
   removeCredential: (provider) => ipcRenderer.invoke("auth:remove", provider),
+  trustState: (workspace) => ipcRenderer.invoke("trust:state", workspace),
+  decideTrust: (workspace, decision) => ipcRenderer.invoke("trust:decide", workspace, decision),
+  listSessions: (workspace) => ipcRenderer.invoke("sessions:list", workspace),
+  switchSession: (workspace, sessionPath) =>
+    ipcRenderer.invoke("engine:switch-session", workspace, sessionPath),
+  searchPackages: (query) => ipcRenderer.invoke("market:search", query),
+  listPackages: () => ipcRenderer.invoke("market:list"),
+  installPackage: (spec, scope, workspace) =>
+    ipcRenderer.invoke("market:install", spec, scope, workspace),
+  updatePackage: (spec, scope, workspace) =>
+    ipcRenderer.invoke("market:update", spec, scope, workspace),
+  removePackage: (spec, scope, workspace) =>
+    ipcRenderer.invoke("market:remove", spec, scope, workspace),
+  respondUi: (workspace, requestId, response) =>
+    ipcRenderer.invoke("engine:respond-ui", workspace, requestId, response),
   onEngineEvent: (listener) => subscribe("engine:event", listener),
   onStatus: (listener) => subscribe("engine:status", listener),
   onWarning: (listener) => subscribe("engine:warning", listener),

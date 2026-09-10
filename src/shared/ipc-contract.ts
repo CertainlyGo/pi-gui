@@ -67,6 +67,34 @@ export interface ModelPickerData {
   };
 }
 
+/** 需要信任决策的项目资源。 */
+export interface TrustState {
+  readonly resources: readonly string[];
+  readonly decision: string | null;
+  readonly decided: boolean;
+}
+
+export interface SessionSummary {
+  readonly id: string;
+  readonly name: string;
+  readonly path: string;
+  readonly updatedAt: number;
+}
+
+export interface MarketPackage {
+  readonly name: string;
+  readonly version: string;
+  readonly description: string;
+  readonly publisher: string;
+  readonly updatedAt: string;
+  readonly downloadsLastWeek: number;
+}
+
+export interface CliOutcome {
+  readonly ok: boolean;
+  readonly error?: string;
+}
+
 /** main → renderer 推送的引擎事件载荷。 */
 export interface EngineEventPayload<M = unknown> {
   readonly workspace: string;
@@ -109,6 +137,25 @@ export interface PiGuiApi {
   getModels(workspace: string): Promise<ModelPickerData | null>;
   setModel(workspace: string, provider: string, modelId: string): Promise<{ ok: boolean; error?: string }>;
   setThinkingLevel(workspace: string, level: string): Promise<{ ok: boolean; error?: string }>;
+
+  trustState(workspace: string): Promise<TrustState>;
+  decideTrust(workspace: string, decision: "always" | "never"): Promise<{ ok: boolean }>;
+
+  listSessions(workspace: string): Promise<SessionSummary[]>;
+  switchSession(workspace: string, sessionPath: string): Promise<{ ok: boolean; cancelled: boolean }>;
+
+  searchPackages(query: string): Promise<MarketPackage[]>;
+  listPackages(): Promise<string[]>;
+  installPackage(spec: string, scope: "global" | "project", workspace: string): Promise<CliOutcome>;
+  updatePackage(spec: string, scope: "global" | "project", workspace: string): Promise<CliOutcome>;
+  removePackage(spec: string, scope: "global" | "project", workspace: string): Promise<CliOutcome>;
+
+  /** 回复扩展的对话框（select/confirm/input/editor）。 */
+  respondUi(
+    workspace: string,
+    requestId: string,
+    response: Record<string, unknown>,
+  ): Promise<{ ok: boolean }>;
 
   listCredentials(): Promise<CredentialInfo[]>;
   setCredential(provider: string, key: string): Promise<AuthSetOutcome>;

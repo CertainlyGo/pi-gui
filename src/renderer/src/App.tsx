@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { JSX } from "react";
-import type { EngineEventPayload, ModelPickerData, SessionStatsData } from "../../shared/ipc-contract.ts";
+import type {
+  EngineEventPayload,
+  MarketPackage,
+  ModelPickerData,
+  SessionStatsData,
+  SessionSummary,
+} from "../../shared/ipc-contract.ts";
 
 type ItemKind = "user" | "assistant" | "tool" | "bash" | "system";
 
@@ -34,6 +40,17 @@ const ZERO_STATS: StatsState = {
   cost: 0,
 };
 
+/** 扩展要的对话框（Extension UI Protocol）。 */
+interface UiDialog {
+  readonly id: string;
+  readonly method: string;
+  readonly title: string;
+  readonly message?: string;
+  readonly placeholder?: string;
+  readonly prefill?: string;
+  readonly options?: readonly string[];
+}
+
 const PROVIDER_DATALIST = [
   "openai",
   "anthropic",
@@ -60,16 +77,16 @@ function num(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-function formatCount(value: number): string {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
-  return String(value);
-}
-
 function readObj(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object"
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function formatCount(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+  return String(value);
 }
 
 /** 参数序列化成可读 JSON（失败时退回原文）。 */
@@ -102,12 +119,18 @@ function toolResultText(value: unknown): string | undefined {
   return parts.length > 0 ? parts.join("\n") : undefined;
 }
 
-/**
- * 会话页：打开工作区 → 启动引擎 → 发 prompt → 事件流渲染。
- * 底部是 token/上下文/缓存/速度统计条；右上角账号页管凭据（写 auth.json，
- * 用 vendored pi 的 auth check 验证）。
- */
+const LEVEL_LABELS: Record<string, string> = {
+  off: "关",
+  minimal: "极简",
+  low: "低",
+  medium: "中",
+  high: "高",
+  xhigh: "超高",
+  max: "最大",
+};
+
 export function App(): JSX.Element {
+  const [view, setView] = useState<"chat" | "market">("chat");
   const [workspace, setWorkspace] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
   const [status, setStatus] = useState<string>("idle");
@@ -116,15 +139,10 @@ export function App(): JSX.Element {
   const [stats, setStats] = useState<StatsState>(ZERO_STATS);
   const [streamSpeed, setStreamSpeed] = useState<number | null>(null);
   const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(new Set());
-
-  function toggleExpanded(id: string): void {
-    setExpandedIds((previous) => {
-      const next = new Set(previous);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [trust, setTrust] = useState<{ resources: readonly string[]; decided: boolean } | null>(null);
+  const [sessions, setSessions] = useState<readonly SessionSummary[]>([]);
+  const [dialog, setDialog] = useState<UiDialog | null>(null);
 
   const itemsRef = useRef<Item[]>([]);
   const itemIdsRef = useRef<string[]>([]);
@@ -142,6 +160,15 @@ export function App(): JSX.Element {
     itemsRef.current.push(item);
     itemIdsRef.current.push(item.id);
     rerender();
+  }
+
+  function toggleExpanded(id: string): void {
+    setExpandedIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   }
 
   function patchOrCreateItem(
@@ -188,6 +215,84 @@ export function App(): JSX.Element {
     }
     itemsRef.current[index] = { ...itemsRef.current[index]!, text };
     rerender();
+  }
+
+  function refreshSessions(path: string): void {
+    void window.piGui.listSessions(path).then(setSessions);
+  }
+
+  async function startEngine(path: string): Promise<void> {
+    try {
+      const snapshot = await window.piGui.startEngine(path);
+      setStatus(snapshot.status);
+      pushItem({
+        kind: "system",
+        id: `open-${Date.now()}`,
+        text: `引擎已启动（pid ${snapshot.pid ?? "?"}）`,
+      });
+      refreshSessions(path);
+    } catch (error) {
+      setStartError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function openWorkspace(): Promise<void> {
+    setStartError(null);
+    const path = await window.piGui.openWorkspace();
+    if (path === null) return;
+    setWorkspace(path);
+    setTrust(null);
+    const trustState = await window.piGui.trustState(path);
+    setTrust({ resources: trustState.resources, decided: trustState.decided });
+    if (trustState.decided) {
+      await startEngine(path);
+    }
+  }
+
+  async function decideTrust(decision: "always" | "never"): Promise<void> {
+    if (workspace === null) return;
+    await window.piGui.decideTrust(workspace, decision);
+    setTrust((state) => (state === null ? null : { ...state, decided: true }));
+    await startEngine(workspace);
+  }
+
+  async function switchToSession(summary: SessionSummary): Promise<void> {
+    if (workspace === null) return;
+    if (status !== "ready") {
+      pushItem({ kind: "system", id: `switch-${Date.now()}`, text: `引擎未就绪，无法切换会话` });
+      return;
+    }
+    const result = await window.piGui.switchSession(workspace, summary.path);
+    pushItem({
+      kind: "system",
+      id: `switch-${Date.now()}`,
+      text: result.ok
+        ? result.cancelled
+          ? "会话切换被扩展取消"
+          : `已切换到会话：${summary.name}`
+        : "会话切换失败",
+    });
+  }
+
+  async function send(): Promise<void> {
+    const text = input.trim();
+    if (workspace === null || text.length === 0) return;
+    setInput("");
+    pushItem({ kind: "user", id: `user-${Date.now()}`, text });
+    const behavior = busyRef.current ? "steer" : undefined;
+    await window.piGui.prompt(workspace, text, behavior);
+    streamEndRef.current?.scrollIntoView({ block: "end" });
+  }
+
+  async function abort(): Promise<void> {
+    if (workspace === null) return;
+    await window.piGui.abort(workspace);
+  }
+
+  async function respondDialog(response: Record<string, unknown>): Promise<void> {
+    if (workspace === null || dialog === null) return;
+    await window.piGui.respondUi(workspace, dialog.id, response);
+    setDialog(null);
   }
 
   useEffect(() => {
@@ -338,12 +443,26 @@ export function App(): JSX.Element {
       pushItem({ kind: "system", id: `warn-${Date.now()}`, text: payload.message }),
     );
     const offUi = window.piGui.onUiRequest((payload) => {
-      const method = payload.request.method;
-      const title = str(payload.request["title"]) ?? str(payload.request["message"]) ?? "";
-      pushItem({
-        kind: "system",
-        id: `ui-${++msgSeq}`,
-        text: `扩展请求（${method}）${title === "" ? "" : `：${title}`} —— 对话框渲染还在下一步，超时会自动处理`,
+      const request = payload.request;
+      const method = request.method;
+      const title = str(request["title"]) ?? str(request["message"]) ?? "扩展请求";
+      const fireAndForget = ["notify", "setStatus", "setWidget", "setTitle", "set_editor_text"];
+      if (fireAndForget.includes(method)) {
+        pushItem({
+          kind: "system",
+          id: `ui-${++msgSeq}`,
+          text: `扩展提示（${method}）：${title}`,
+        });
+        return;
+      }
+      setDialog({
+        id: request.id,
+        method,
+        title,
+        ...(str(request["message"]) !== undefined ? { message: str(request["message"])! } : {}),
+        ...(str(request["placeholder"]) !== undefined ? { placeholder: str(request["placeholder"])! } : {}),
+        ...(str(request["prefill"]) !== undefined ? { prefill: str(request["prefill"])! } : {}),
+        ...(Array.isArray(request["options"]) ? { options: request["options"].map(String) } : {}),
       });
     });
 
@@ -357,7 +476,7 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     if (workspace === null) return;
-    const ws = workspace; // 嵌套函数里 TS 不做收窄，闭包捕获会丢 string | null 的窄化
+    const ws = workspace; // 嵌套函数里 TS 不做收窄
     let cancelled = false;
     let timer: ReturnType<typeof setInterval> | undefined;
     async function refresh(): Promise<void> {
@@ -373,130 +492,189 @@ export function App(): JSX.Element {
     };
   }, [workspace]);
 
-  async function openWorkspace(): Promise<void> {
-    setStartError(null);
-    const path = await window.piGui.openWorkspace();
-    if (path === null) return;
-    try {
-      const snapshot = await window.piGui.startEngine(path);
-      setWorkspace(path);
-      setStatus(snapshot.status);
-      pushItem({
-        kind: "system",
-        id: `open-${Date.now()}`,
-        text: `已打开目录并启动引擎（pid ${snapshot.pid ?? "?"}）`,
-      });
-    } catch (error) {
-      setStartError(error instanceof Error ? error.message : String(error));
-    }
-  }
-
-  async function send(): Promise<void> {
-    const text = input.trim();
-    if (workspace === null || text.length === 0) return;
-    setInput("");
-    pushItem({ kind: "user", id: `user-${Date.now()}`, text });
-    const behavior = busyRef.current ? "steer" : undefined;
-    await window.piGui.prompt(workspace, text, behavior);
-    streamEndRef.current?.scrollIntoView({ block: "end" });
-  }
-
-  async function abort(): Promise<void> {
-    if (workspace === null) return;
-    await window.piGui.abort(workspace);
-  }
-
   const items = itemsRef.current;
 
   return (
     <div className="app">
       <header className="topbar">
-        <div className="ws-name">{workspace ?? "未选择工作区"}</div>
-        <div className={`engine-state ${status}`}>
-          <span className="dot" />
-          {status}
-        </div>
+        <nav className="view-tabs">
+          <button className={`tab ${view === "chat" ? "on" : ""}`} onClick={() => setView("chat")}>
+            会话
+          </button>
+          <button className={`tab ${view === "market" ? "on" : ""}`} onClick={() => setView("market")}>
+            插件市场
+          </button>
+        </nav>
+        {view === "chat" && <div className="ws-name">{workspace ?? "未选择工作区"}</div>}
+        {view === "chat" && (
+          <div className={`engine-state ${status}`}>
+            <span className="dot" />
+            {status}
+          </div>
+        )}
         <div className="spacer" />
-        <ModelPicker workspace={workspace} />
-        <AccountButton onChanged={() => rerender()} />
-        <button className="btn ghost" onClick={() => void openWorkspace()} disabled={busy}>
-          {workspace === null ? "选择工作区" : "更换工作区"}
-        </button>
+        <ModelPicker
+          workspace={workspace}
+          onAskConfigure={() => setAccountOpen(true)}
+        />
+        <AccountButton
+          open={accountOpen}
+          onOpen={() => setAccountOpen(true)}
+          onClose={() => setAccountOpen(false)}
+          onChanged={() => rerender()}
+        />
+        {view === "chat" && (
+          <button
+            className="btn ghost"
+            onClick={() => void openWorkspace()}
+            disabled={busy}
+          >
+            {workspace === null ? "选择工作区" : "更换工作区"}
+          </button>
+        )}
       </header>
 
-      <main className="stream">
-        {startError !== null && (
-          <div className="start-error">
-            <strong>引擎启动失败</strong>
-            <pre>{startError}</pre>
+      {view === "chat" ? (
+        <>
+          <div className="chat-body">
+            <aside className="rail">
+              <div className="grouplabel">会话（此工作区）</div>
+              {workspace === null && <p className="rail-empty">选择工作区后显示会话列表。</p>}
+              {sessions.length === 0 && workspace !== null && (
+                <p className="rail-empty">还没有会话。</p>
+              )}
+              {sessions.map((summary) => (
+                <button
+                  key={summary.path}
+                  type="button"
+                  className="sess"
+                  onClick={() => void switchToSession(summary)}
+                  title={`恢复到 ${summary.path}`}
+                >
+                  <span className="sess-name">{summary.name}</span>
+                  <span className="sess-time">{formatTime(summary.updatedAt)}</span>
+                </button>
+              ))}
+            </aside>
+            <main className="stream">
+              {trust !== null && !trust.decided && trust.resources.length > 0 && (
+                <div className="trust-banner">
+                  <h3>此目录包含需要信任的项目资源</h3>
+                  <ul>
+                    {trust.resources.map((resource) => (
+                      <li key={resource}>
+                        <code>{resource}</code>
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="small">
+                    信任后 pi 才会加载这些项目级设置、扩展与技能。资源以你的身份运行代码，
+                    不信任则全部忽略。此决定按目录记录在 pi 的
+                    <code> trust.json</code>，可在终端里同样生效。
+                  </p>
+                  <div className="acts">
+                    <button className="btn warn" onClick={() => void decideTrust("always")}>
+                      信任并加载
+                    </button>
+                    <button className="btn ghost" onClick={() => void decideTrust("never")}>
+                      不信任这个目录
+                    </button>
+                  </div>
+                </div>
+              )}
+              {startError !== null && (
+                <div className="start-error">
+                  <strong>引擎启动失败</strong>
+                  <pre>{startError}</pre>
+                </div>
+              )}
+              {items.length === 0 && workspace === null && (
+                <p className="empty">先选一个工作区（本地目录），agent 会在里面干活。</p>
+              )}
+              {items.length === 0 && workspace !== null && status !== "ready" && trust?.decided !== false && (
+                <p className="empty">引擎启动中…</p>
+              )}
+              {trust !== null && !trust.decided && (
+                <p className="empty trust-pending">先决定是否信任这个目录，引擎才会启动。</p>
+              )}
+              <div className="wrap">
+                {items.map((item) => (
+                  <ItemView
+                    key={item.id}
+                    item={item}
+                    expanded={expandedIds.has(item.id)}
+                    onToggle={() => toggleExpanded(item.id)}
+                  />
+                ))}
+              </div>
+              <div ref={streamEndRef} />
+            </main>
           </div>
-        )}
-        {items.length === 0 && workspace === null && (
-          <p className="empty">先选一个工作区（本地目录），agent 会在里面干活。</p>
-        )}
-        {items.length === 0 && workspace !== null && (
-          <p className="empty">
-            {status === "ready" ? "引擎已就绪。说一句话开始。" : "引擎启动中…"}
-          </p>
-        )}
-        <div className="wrap">
-          {items.map((item) => (
-            <ItemView
-              key={item.id}
-              item={item}
-              expanded={expandedIds.has(item.id)}
-              onToggle={() => toggleExpanded(item.id)}
-            />
-          ))}
-        </div>
-        <div ref={streamEndRef} />
-      </main>
 
-      <StatsBar stats={stats} busy={busy} speed={streamSpeed} />
+          <StatsBar stats={stats} busy={busy} speed={streamSpeed} />
 
-      <footer className="composer">
-        <div className="composer-inner">
-          <textarea
-            rows={1}
-            placeholder={
-              workspace === null
-                ? "先选择工作区"
-                : busy
-                  ? "补充说明（agent 完成当前动作后处理）"
-                  : "说点什么…"
-            }
-            value={input}
-            disabled={workspace === null}
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                void send();
-              }
-            }}
-          />
-          <div className="composer-foot">
-            <span className="hint">
-              {workspace === null ? "尚未连接引擎" : "Enter 发送 · Shift+Enter 换行"}
-            </span>
-            {busy ? (
-              <button className="btn warn" onClick={() => void abort()}>
-                停止
-              </button>
-            ) : (
-              <button
-                className="btn primary"
-                onClick={() => void send()}
-                disabled={workspace === null || input.trim().length === 0}
-              >
-                发送
-              </button>
-            )}
-          </div>
-        </div>
-      </footer>
+          <footer className="composer">
+            <div className="composer-inner">
+              <textarea
+                rows={1}
+                placeholder={
+                  workspace === null
+                    ? "先选择工作区"
+                    : busy
+                      ? "补充说明（agent 完成当前动作后处理）"
+                      : "说点什么…"
+                }
+                value={input}
+                disabled={workspace === null}
+                onChange={(event) => setInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    void send();
+                  }
+                }}
+              />
+              <div className="composer-foot">
+                <span className="hint">
+                  {workspace === null ? "尚未连接引擎" : "Enter 发送 · Shift+Enter 换行"}
+                </span>
+                {busy ? (
+                  <button className="btn warn" onClick={() => void abort()}>
+                    停止
+                  </button>
+                ) : (
+                  <button
+                    className="btn primary"
+                    onClick={() => void send()}
+                    disabled={workspace === null || input.trim().length === 0}
+                  >
+                    发送
+                  </button>
+                )}
+              </div>
+            </div>
+          </footer>
+        </>
+      ) : (
+        <MarketView workspace={workspace} />
+      )}
+
+      {dialog !== null && (
+        <ExtensionDialog
+          dialog={dialog}
+          onRespond={(response) => void respondDialog(response)}
+        />
+      )}
     </div>
   );
+}
+
+function formatTime(millis: number): string {
+  const date = new Date(millis);
+  const now = new Date();
+  const sameDay = date.toDateString() === now.toDateString();
+  const time = date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+  return sameDay ? time : `${date.getMonth() + 1}/${date.getDate()}`;
 }
 
 function toStats(data: SessionStatsData | null): StatsState {
@@ -505,9 +683,7 @@ function toStats(data: SessionStatsData | null): StatsState {
   const input = num(tokens["input"]);
   const output = num(tokens["output"]);
   const cacheRead = num(tokens["cacheRead"]);
-  // 缓存命中率 = 命中 / (未命中输入 + 命中)
-  const cacheHitPct =
-    input + cacheRead > 0 ? (cacheRead / (input + cacheRead)) * 100 : null;
+  const cacheHitPct = input + cacheRead > 0 ? (cacheRead / (input + cacheRead)) * 100 : null;
   const context = asRecord(data["contextUsage"]);
   const ctxTokens = typeof context["tokens"] === "number" ? context["tokens"] : null;
   const ctxWindow = num(context["contextWindow"]);
@@ -550,11 +726,18 @@ function StatsBar({
         缓存命中 <b>{formatPercent(stats.cacheHitPct)}</b>
       </span>
       <span className="stat ctx">上下文</span>
-      <div className="ctx-track" title={stats.ctxTokens === null ? "上下文不可用" : `${stats.ctxTokens} / ${stats.ctxWindow}`}>
+      <div
+        className="ctx-track"
+        title={
+          stats.ctxTokens === null ? "上下文不可用" : `${stats.ctxTokens} / ${stats.ctxWindow}`
+        }
+      >
         <div className="ctx-fill" style={ctxPct === null ? {} : { width: `${ctxPct}%` }} />
       </div>
       <span className="stat ctx-num">
-        {stats.ctxTokens !== null ? `${formatCount(stats.ctxTokens)}/${formatCount(stats.ctxWindow ?? 0)}` : "—"}
+        {stats.ctxTokens !== null
+          ? `${formatCount(stats.ctxTokens)}/${formatCount(stats.ctxWindow ?? 0)}`
+          : "—"}
       </span>
       <span className={`stat speed ${busy ? "" : "dim"}`}>
         速度 {speed !== null && speed > 0 ? `${speed.toFixed(1)} tok/s` : "—"}
@@ -564,145 +747,29 @@ function StatsBar({
   );
 }
 
-function AccountButton({ onChanged }: { onChanged: () => void }): JSX.Element {
-  const [open, setOpen] = useState(false);
-  const [providers, setProviders] = useState<Array<{ provider: string; type: string; keyMasked: string }>>([]);
-  const [provider, setProvider] = useState("openai");
-  const [key, setKey] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [outcome, setOutcome] = useState<{ ok: boolean; text: string } | null>(null);
-
-  function refreshList(): void {
-    void window.piGui.listCredentials().then(setProviders);
-  }
-
-  useEffect(() => {
-    if (open) refreshList();
-  }, [open]);
-
-  async function save(): Promise<void> {
-    if (provider.trim().length === 0 || key.trim().length === 0) return;
-    setSaving(true);
-    setOutcome(null);
-    const result = await window.piGui.setCredential(provider.trim().toLowerCase(), key.trim());
-    setSaving(false);
-    if (!result.ok) {
-      setOutcome({ ok: false, text: result.error ?? "保存失败" });
-      return;
-    }
-    const check = result.check;
-    if (check === undefined) {
-      setOutcome({ ok: true, text: "已保存（未验证）" });
-    } else if (check.status === "ready") {
-      setOutcome({ ok: true, text: `已保存，${provider} 就绪` });
-    } else {
-      const detail = check.reason ?? check.message ?? "凭据未被识别";
-      setOutcome({ ok: false, text: `已保存，但未就绪：${detail}` });
-    }
-    setKey("");
-    refreshList();
-    onChanged();
-  }
-
-  async function remove(providerName: string): Promise<void> {
-    await window.piGui.removeCredential(providerName);
-    refreshList();
-    onChanged();
-  }
-
-  return (
-    <>
-      <button className="btn ghost" onClick={() => setOpen(true)}>
-        账号
-      </button>
-      {open && (
-        <div className="sheet-mask" onClick={() => setOpen(false)}>
-          <div className="sheet" onClick={(event) => event.stopPropagation()}>
-            <h2>账号与凭据</h2>
-            <p className="sheet-sub">
-              凭据写入 <code>~/.pi/agent/auth.json</code>（pi 自己的格式），保存后用
-              <code> pi auth check</code> 验证。OAuth 订阅登录（Claude Pro、Codex 等）在下一步。
-            </p>
-
-            <div className="cred-list">
-              {providers.length === 0 && <p className="cred-empty">还没有配置任何 provider。</p>}
-              {providers.map((entry) => (
-                <div key={entry.provider} className="cred-row">
-                  <code>{entry.provider}</code>
-                  <span className="cred-type">{entry.type}</span>
-                  <span className="cred-key">{entry.keyMasked}</span>
-                  <button
-                    className="btn ghost small"
-                    onClick={() => void remove(entry.provider)}
-                  >
-                    移除
-                  </button>
-                </div>
-              ))}
-            </div>
-
-            <div className="cred-form">
-              <input
-                list="pi-providers"
-                placeholder="provider（如 openai、anthropic、radius）"
-                value={provider}
-                onChange={(event) => setProvider(event.target.value)}
-              />
-              <datalist id="pi-providers">
-                {PROVIDER_DATALIST.map((name) => (
-                  <option key={name} value={name} />
-                ))}
-              </datalist>
-              <input
-                type="password"
-                placeholder="API Key / Token"
-                value={key}
-                onChange={(event) => setKey(event.target.value)}
-              />
-              <button className="btn primary" onClick={() => void save()} disabled={saving}>
-                {saving ? "保存并验证…" : "保存并验证"}
-              </button>
-            </div>
-
-            {outcome !== null && (
-              <p className={`cred-outcome ${outcome.ok ? "ok" : "bad"}`}>{outcome.text}</p>
-            )}
-
-            <button className="btn ghost sheet-close" onClick={() => setOpen(false)}>
-              关闭
-            </button>
-          </div>
-        </div>
-      )}
-    </>
-  );
-}
-
-const LEVEL_LABELS: Record<string, string> = {
-  off: "关",
-  minimal: "极简",
-  low: "低",
-  medium: "中",
-  high: "高",
-  xhigh: "超高",
-  max: "最大",
-};
-
 /**
- * 模型选择器：按供应商分组列出可用模型（供应商在这里是选择维度，
- * 凭据与开关在账号页），底部是思考等级。选择会持久化为 session 默认。
+ * 模型选择器：按供应商分组列出可用模型，供应商是选择维度；
+ * 未配置凭据的组给出去账号页的引导（Round 5 的修改项）。
  */
-function ModelPicker({ workspace }: { workspace: string | null }): JSX.Element {
+function ModelPicker({
+  workspace,
+  onAskConfigure,
+}: {
+  workspace: string | null;
+  onAskConfigure: () => void;
+}): JSX.Element {
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<ModelPickerData | null>(null);
   const [configured, setConfigured] = useState<ReadonlySet<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  const [hintProvider, setHintProvider] = useState<string | null>(null);
 
   async function toggle(): Promise<void> {
     const next = !open;
     setOpen(next);
     if (!next || workspace === null) return;
     setError(null);
+    setHintProvider(null);
     try {
       const [models, credentials] = await Promise.all([
         window.piGui.getModels(workspace),
@@ -732,6 +799,7 @@ function ModelPicker({ workspace }: { workspace: string | null }): JSX.Element {
       setError(result.error ?? "设置失败");
       return;
     }
+    setHintProvider(configured.has(model.provider) ? null : model.provider);
     await refreshCurrent();
   }
 
@@ -780,6 +848,16 @@ function ModelPicker({ workspace }: { workspace: string | null }): JSX.Element {
       {open && (
         <div className="model-popover">
           {error !== null && <p className="model-error">{error}</p>}
+          {hintProvider !== null && (
+            <div className="model-hint">
+              <span>
+                <code>{hintProvider}</code> 未配置凭据，发消息会被引擎拒绝。
+              </span>
+              <button className="btn primary small" onClick={() => { setOpen(false); onAskConfigure(); }}>
+                到账号页配置
+              </button>
+            </div>
+          )}
           {data === null && <p className="model-empty">加载模型清单…</p>}
           {groups.length === 0 && data !== null && (
             <p className="model-empty">没有可用模型（先到账号页配置凭据？）</p>
@@ -828,6 +906,396 @@ function ModelPicker({ workspace }: { workspace: string | null }): JSX.Element {
   );
 }
 
+function AccountButton({
+  open,
+  onOpen,
+  onClose,
+  onChanged,
+}: {
+  open: boolean;
+  onOpen: () => void;
+  onClose: () => void;
+  onChanged: () => void;
+}): JSX.Element {
+  const [providers, setProviders] = useState<
+    Array<{ provider: string; type: string; keyMasked: string }>
+  >([]);
+  const [provider, setProvider] = useState("openai");
+  const [key, setKey] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [outcome, setOutcome] = useState<{ ok: boolean; text: string } | null>(null);
+
+  function refreshList(): void {
+    void window.piGui.listCredentials().then(setProviders);
+  }
+
+  useEffect(() => {
+    if (open) refreshList();
+  }, [open]);
+
+  async function save(): Promise<void> {
+    if (provider.trim().length === 0 || key.trim().length === 0) return;
+    setSaving(true);
+    setOutcome(null);
+    const result = await window.piGui.setCredential(provider.trim().toLowerCase(), key.trim());
+    setSaving(false);
+    if (!result.ok) {
+      setOutcome({ ok: false, text: result.error ?? "保存失败" });
+      return;
+    }
+    const check = result.check;
+    if (check === undefined) {
+      setOutcome({ ok: true, text: "已保存（未验证）" });
+    } else if (check.status === "ready") {
+      setOutcome({ ok: true, text: `已保存，${provider} 就绪` });
+    } else {
+      const detail = check.reason ?? check.message ?? "凭据未被识别";
+      setOutcome({ ok: false, text: `已保存，但未就绪：${detail}` });
+    }
+    setKey("");
+    refreshList();
+    onChanged();
+  }
+
+  async function remove(providerName: string): Promise<void> {
+    await window.piGui.removeCredential(providerName);
+    refreshList();
+    onChanged();
+  }
+
+  return (
+    <>
+      <button className="btn ghost" onClick={open ? onClose : onOpen}>
+        账号
+      </button>
+      {open && (
+        <div className="sheet-mask" onClick={onClose}>
+          <div className="sheet" onClick={(event) => event.stopPropagation()}>
+            <h2>账号与凭据</h2>
+            <p className="sheet-sub">
+              凭据写入 <code>~/.pi/agent/auth.json</code>（pi 自己的格式），保存后用
+              <code> pi auth check</code> 验证。OAuth 订阅登录（Claude Pro、Codex 等）在下一步。
+            </p>
+
+            <div className="cred-list">
+              {providers.length === 0 && <p className="cred-empty">还没有配置任何 provider。</p>}
+              {providers.map((entry) => (
+                <div key={entry.provider} className="cred-row">
+                  <code>{entry.provider}</code>
+                  <span className="cred-type">{entry.type}</span>
+                  <span className="cred-key">{entry.keyMasked}</span>
+                  <button className="btn ghost small" onClick={() => void remove(entry.provider)}>
+                    移除
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div className="cred-form">
+              <input
+                list="pi-providers"
+                placeholder="provider（如 openai、anthropic、radius）"
+                value={provider}
+                onChange={(event) => setProvider(event.target.value)}
+              />
+              <datalist id="pi-providers">
+                {PROVIDER_DATALIST.map((name) => (
+                  <option key={name} value={name} />
+                ))}
+              </datalist>
+              <input
+                type="password"
+                placeholder="API Key / Token"
+                value={key}
+                onChange={(event) => setKey(event.target.value)}
+              />
+              <button className="btn primary" onClick={() => void save()} disabled={saving}>
+                {saving ? "保存并验证…" : "保存并验证"}
+              </button>
+            </div>
+
+            {outcome !== null && (
+              <p className={`cred-outcome ${outcome.ok ? "ok" : "bad"}`}>{outcome.text}</p>
+            )}
+
+            <button className="btn ghost sheet-close" onClick={onClose}>
+              关闭
+            </button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function MarketView({ workspace }: { workspace: string | null }): JSX.Element {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<readonly MarketPackage[]>([]);
+  const [installed, setInstalled] = useState<readonly string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [marketError, setMarketError] = useState<string | null>(null);
+  const [installTarget, setInstallTarget] = useState<MarketPackage | null>(null);
+  const [installScope, setInstallScope] = useState<"global" | "project">("global");
+  const [installing, setInstalling] = useState(false);
+  const [outcome, setOutcome] = useState<{ ok: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    refreshInstalled();
+    void search("");
+  }, []);
+
+  async function refreshInstalled(): Promise<void> {
+    try {
+      setInstalled(await window.piGui.listPackages());
+    } catch {
+      setInstalled([]);
+    }
+  }
+
+  async function search(text: string): Promise<void> {
+    setSearching(true);
+    setMarketError(null);
+    try {
+      setResults(await window.piGui.searchPackages(text));
+    } catch (caught) {
+      setMarketError(caught instanceof Error ? caught.message : String(caught));
+      setResults([]);
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  async function doInstall(): Promise<void> {
+    if (installTarget === null) return;
+    setInstalling(true);
+    setOutcome(null);
+    const spec = `npm:${installTarget.name}`;
+    const result = await window.piGui.installPackage(spec, installScope, workspace ?? ".");
+    setInstalling(false);
+    if (result.ok) {
+      setOutcome({ ok: true, text: `已安装 ${installTarget.name}（${installScope === "project" ? "仅此工作区" : "全局"}）` });
+      setInstallTarget(null);
+      await refreshInstalled();
+    } else {
+      setOutcome({ ok: false, text: `安装失败：${result.error ?? "未知错误"}` });
+    }
+  }
+
+  async function doAction(
+    action: "update" | "remove",
+    spec: string,
+    scope: "global" | "project",
+  ): Promise<void> {
+    setOutcome(null);
+    const workspaceArg = scope === "project" && workspace !== null ? workspace : ".";
+    const result =
+      action === "update"
+        ? await window.piGui.updatePackage(spec, scope, workspaceArg)
+        : await window.piGui.removePackage(spec, scope, workspaceArg);
+    setOutcome(result.ok
+      ? { ok: true, text: `${action === "update" ? "已更新" : "已移除"} ${spec}` }
+      : { ok: false, text: `${action === "update" ? "更新" : "移除"}失败：${result.error ?? "未知错误"}` });
+    await refreshInstalled();
+  }
+
+  return (
+    <div className="market">
+      <div className="mw">
+        <div className="mhead">
+          <div>
+            <h2>插件市场</h2>
+            <p className="sub">
+              来自 npm 上带 <code>pi-package</code> 关键字的包。安装交给 pi 本体处理，
+              我们只做浏览与按钮。
+            </p>
+          </div>
+          <div className="installed-count">{installed.length} 个已安装</div>
+        </div>
+
+        <div className="market-search">
+          <input
+            placeholder="搜索插件…（如 vim、review、postgres）"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") void search(query);
+            }}
+          />
+          <button className="btn primary" onClick={() => void search(query)} disabled={searching}>
+            {searching ? "搜索中…" : "搜索"}
+          </button>
+        </div>
+
+        {marketError !== null && <p className="market-error">{marketError}</p>}
+        {outcome !== null && (
+          <p className={`cred-outcome ${outcome.ok ? "ok" : "bad"}`}>{outcome.text}</p>
+        )}
+
+        <div className="installed-row">
+          {installed.map((spec) => (
+            <div key={spec} className="installed-chip">
+              <code>{spec}</code>
+              <button className="btn ghost small" onClick={() => void doAction("update", spec, "global")}>
+                更新
+              </button>
+              <button className="btn ghost small" onClick={() => void doAction("remove", spec, "global")}>
+                移除
+              </button>
+            </div>
+          ))}
+        </div>
+
+        <div className="cards">
+          {results.map((pkg) => (
+            <div key={pkg.name} className="card">
+              <div className="card-l1">
+                <code className="card-name">{pkg.name}</code>
+                <span className="card-by">{pkg.publisher}</span>
+              </div>
+              <p className="card-desc">{pkg.description || "（无描述）"}</p>
+              <div className="card-stats">
+                {pkg.downloadsLastWeek > 0
+                  ? `周下载 ${formatCount(pkg.downloadsLastWeek)}`
+                  : ""}
+                {pkg.updatedAt !== "" ? ` · 更新于 ${pkg.updatedAt.slice(0, 10)}` : ""}
+              </div>
+              <div className="card-actions">
+                <span className="card-ver">{pkg.version}</span>
+                <button className="btn primary small" onClick={() => setInstallTarget(pkg)}>
+                  安装
+                </button>
+              </div>
+            </div>
+          ))}
+          {results.length === 0 && !searching && (
+            <p className="card-none">没有结果。</p>
+          )}
+        </div>
+      </div>
+
+      {installTarget !== null && (
+        <div className="sheet-mask" onClick={() => setInstallTarget(null)}>
+          <div className="sheet" onClick={(event) => event.stopPropagation()}>
+            <h2>安装 {installTarget.name}</h2>
+            <p className="sheet-sub">
+              版本 {installTarget.version}。扩展以你的身份运行代码 —— 安装前请确认你信任这个包。
+            </p>
+            <div className="scope">
+              <label className={installScope === "global" ? "on" : ""}>
+                <input
+                  type="radio"
+                  checked={installScope === "global"}
+                  onChange={() => setInstallScope("global")}
+                />
+                <span>全局<span className="p"> → ~/.pi/agent/settings.json，所有工作区可用</span></span>
+              </label>
+              <label className={installScope === "project" ? "on" : ""}>
+                <input
+                  type="radio"
+                  checked={installScope === "project"}
+                  onChange={() => setInstallScope("project")}
+                />
+                <span>仅此工作区<span className="p"> → .pi/settings.json，可随仓库分享</span></span>
+              </label>
+            </div>
+            <div className="acts">
+              <button className="btn ghost" onClick={() => setInstallTarget(null)}>
+                取消
+              </button>
+              <button className="btn primary" onClick={() => void doInstall()} disabled={installing}>
+                {installing ? "安装中…" : "安装"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 扩展要的对话框。头部标明来源是第三方，防止非终端用户误以为这是 pi 官方在问。 */
+function ExtensionDialog({
+  dialog,
+  onRespond,
+}: {
+  dialog: UiDialog;
+  onRespond: (response: Record<string, unknown>) => void;
+}): JSX.Element {
+  const [text, setText] = useState(dialog.prefill ?? "");
+
+  useEffect(() => {
+    setText(dialog.prefill ?? "");
+  }, [dialog.id, dialog.prefill]);
+
+  return (
+    <div className="sheet-mask">
+      <div className="sheet ext-dialog">
+        <div className="ext-source">来自第三方扩展（内容未经 pi 审核）</div>
+        <h2>{dialog.title}</h2>
+        {dialog.message !== undefined && <p className="sheet-sub">{dialog.message}</p>}
+        <div className="ext-body">
+          {dialog.method === "confirm" && (
+            <div className="acts ext-acts">
+              <button className="btn primary" onClick={() => onRespond({ confirmed: true })}>
+                是
+              </button>
+              <button className="btn ghost" onClick={() => onRespond({ confirmed: false })}>
+                否
+              </button>
+            </div>
+          )}
+          {dialog.method === "input" && (
+            <>
+              <input
+                autoFocus
+                placeholder={dialog.placeholder ?? ""}
+                value={text}
+                onChange={(event) => setText(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") onRespond({ value: text });
+                }}
+              />
+              <div className="acts ext-acts">
+                <button className="btn primary" onClick={() => onRespond({ value: text })}>
+                  发送
+                </button>
+              </div>
+            </>
+          )}
+          {dialog.method === "editor" && (
+            <>
+              <textarea
+                autoFocus
+                rows={8}
+                value={text}
+                onChange={(event) => setText(event.target.value)}
+              />
+              <div className="acts ext-acts">
+                <button className="btn primary" onClick={() => onRespond({ value: text })}>
+                  发送
+                </button>
+              </div>
+            </>
+          )}
+          {dialog.method === "select" && (
+            <div className="ext-options">
+              {(dialog.options ?? []).map((option) => (
+                <button key={option} className="btn" onClick={() => onRespond({ value: option })}>
+                  {option}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <button className="btn ghost sheet-close" onClick={() => onRespond({ cancelled: true })}>
+          取消
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ItemView({
   item,
   expanded,
@@ -860,9 +1328,7 @@ function ItemView({
           <span className="tool-type">{item.kind === "bash" ? "shell" : "工具"}</span>
           <code>{item.title}</code>
           {item.state !== undefined && (
-            <span className={`tool-state ${item.state === "失败" ? "bad" : ""}`}>
-              {item.state}
-            </span>
+            <span className={`tool-state ${item.state === "失败" ? "bad" : ""}`}>{item.state}</span>
           )}
           <span className={`tool-caret ${expanded ? "open" : ""}`}>▾</span>
         </button>

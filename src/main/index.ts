@@ -1,10 +1,19 @@
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, dialog, ipcMain, Menu } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, net } from "electron";
 import { createEngineRegistry } from "./engine-registry.ts";
 import { spawnPiEngine } from "./pi-process.ts";
 import { checkProviderAuth, loadAuthFile, removeCredential, saveCredential } from "./credentials.ts";
+import { createTrustStore, detectTrustResources } from "./trust.ts";
+import { listWorkspaceSessions } from "./sessions.ts";
+import {
+  installPiPackage,
+  listInstalledPackages,
+  removePiPackage,
+  searchPiPackages,
+  updatePiPackage,
+} from "./marketplace.ts";
 import type { EngineInstance } from "./engine-instance.ts";
 import type { ExtensionUiRequest } from "../shared/rpc-peer.ts";
 import type { AuthSetOutcome, CredentialInfo } from "../shared/ipc-contract.ts";
@@ -207,6 +216,74 @@ app.whenReady().then(() => {
 
   ipcMain.handle("auth:remove", async (_event, provider: string): Promise<boolean> => {
     return removeCredential(authPath, provider);
+  });
+
+  // ---- 项目信任（ADR-0006）----
+  const agentDir = join(homedir(), ".pi", "agent");
+  const trust = createTrustStore(agentDir);
+
+  ipcMain.handle("trust:state", (_event, workspace: string) => {
+    const resources = detectTrustResources(workspace);
+    const decision = trust.decision(workspace);
+    return {
+      resources,
+      decision,
+      decided: resources.length === 0 || decision === "always" || decision === "never",
+    };
+  });
+
+  ipcMain.handle("trust:decide", (_event, workspace: string, decision: "always" | "never") => {
+    try {
+      trust.decide(workspace, decision);
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // ---- session 列表与切换 ----
+  ipcMain.handle("sessions:list", (_event, workspace: string) => {
+    return listWorkspaceSessions(agentDir, workspace);
+  });
+
+  ipcMain.handle("engine:switch-session", async (_event, workspace: string, sessionPath: string) => {
+    const instance = engines.get(workspace);
+    if (instance.status !== "ready") return { ok: false, cancelled: false, error: "引擎未就绪" };
+    const { cancelled } = await instance.switchSession(sessionPath);
+    return { ok: true, cancelled };
+  });
+
+  // ---- 插件市场 ----
+  ipcMain.handle("market:search", async (_event, query: string) => {
+    // 用 Electron 自己的网络栈（走系统代理），外部的 Node fetch 在这台机器上会超时。
+    const fetchViaElectron = (input: URL | RequestInfo, init?: RequestInit): Promise<Response> =>
+      net.fetch(input as RequestInfo, init);
+    return searchPiPackages(query, 24, fetchViaElectron);
+  });
+
+  ipcMain.handle("market:list", async () => {
+    return listInstalledPackages(agentDir, "");
+  });
+
+  ipcMain.handle("market:install", async (_event, spec: string, scope: "global" | "project", workspace: string) => {
+    const cwd = scope === "project" ? workspace : homedir();
+    return installPiPackage({ nodeExecPath: process.execPath, cliPath: piCliPath, spec, scope, cwd });
+  });
+
+  ipcMain.handle("market:update", async (_event, spec: string, scope: "global" | "project", workspace: string) => {
+    const cwd = scope === "project" ? workspace : homedir();
+    return updatePiPackage({ nodeExecPath: process.execPath, cliPath: piCliPath, spec, scope, cwd });
+  });
+
+  ipcMain.handle("market:remove", async (_event, spec: string, scope: "global" | "project", workspace: string) => {
+    const cwd = scope === "project" ? workspace : homedir();
+    return removePiPackage({ nodeExecPath: process.execPath, cliPath: piCliPath, spec, scope, cwd });
+  });
+
+  // ---- 扩展对话框（Extension UI Protocol）----
+  ipcMain.handle("engine:respond-ui", (_event, workspace: string, requestId: string, response: Record<string, unknown>) => {
+    engines.get(workspace).respondExtensionUi(requestId, response);
+    return { ok: true };
   });
 
   createWindow();
