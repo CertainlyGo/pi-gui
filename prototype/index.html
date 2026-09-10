@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pi-gui 原型 — 假数据</title>
+<style>
+  :root{
+    --bg:#fbfbf9; --panel:#fff; --panel2:#f5f5f2; --line:#e5e4df; --line2:#efeeea;
+    --text:#1b1b19; --muted:#71716b; --faint:#9a9a93;
+    --accent:#2f6feb; --accent-soft:#eaf0fe; --accent-line:#cdddfb;
+    --warn:#a4590b; --warn-soft:#fdf5e9; --warn-line:#f0dfc0;
+    --ok:#2f7d5b;
+    --r:12px;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#101010; --panel:#181817; --panel2:#1f1f1e; --line:#2c2c2a; --line2:#242423;
+      --text:#ececea; --muted:#a2a29b; --faint:#6e6e68;
+      --accent:#7ba2ff; --accent-soft:#1a2440; --accent-line:#2b3a5e;
+      --warn:#e2a45f; --warn-soft:#251d14; --warn-line:#3b3023;
+      --ok:#6dbf95;
+    }
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:var(--bg); color:var(--text);
+    font:14px/1.55 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .mono{font-family:ui-monospace,"Cascadia Code",Consolas,monospace;font-size:12.5px}
+
+  /* ---------- prototype chrome ---------- */
+  .proto{height:44px;display:flex;align-items:center;gap:16px;padding:0 14px;
+    background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+  .proto .tag{font-size:11.5px;color:var(--faint);border:1px dashed var(--line);
+    border-radius:999px;padding:2px 9px}
+  .proto nav{display:flex;gap:4px;margin-left:auto}
+  .proto nav button{font:inherit;font-size:13px;color:var(--muted);background:none;border:0;
+    padding:6px 12px;border-radius:8px;cursor:pointer}
+  .proto nav button.on{background:var(--panel2);color:var(--text);font-weight:600}
+
+  .screen{display:none}
+  .screen.on{display:block}
+
+  /* ---------- chat screen ---------- */
+  #chat.on{display:grid;grid-template-columns:268px 1fr;height:calc(100vh - 44px)}
+  .rail{border-right:1px solid var(--line);background:var(--panel);overflow-y:auto;padding:14px 12px}
+  .ws{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);
+    border-radius:10px;background:var(--panel2)}
+  .ws .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);flex:none}
+  .ws .path{font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ws .caret{color:var(--faint);margin-left:auto;font-size:11px}
+  .newbtn{margin:10px 0 16px;width:100%;font:inherit;font-size:13px;padding:8px;border-radius:9px;
+    border:1px solid var(--accent-line);background:var(--accent-soft);color:var(--accent);cursor:pointer}
+  .grouplabel{font-size:11px;letter-spacing:.06em;color:var(--faint);padding:0 10px;margin:14px 0 6px}
+  .sess{padding:8px 10px;border-radius:9px;cursor:pointer;display:flex;gap:8px;align-items:baseline}
+  .sess:hover{background:var(--panel2)}
+  .sess.on{background:var(--accent-soft)}
+  .sess .t{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .sess.on .t{font-weight:600}
+  .sess .m{margin-left:auto;font-size:11px;color:var(--faint);flex:none}
+
+  .col{display:flex;flex-direction:column;min-width:0}
+  .topbar{height:52px;display:flex;align-items:center;gap:10px;padding:0 20px;
+    border-bottom:1px solid var(--line);background:var(--panel)}
+  .topbar h1{font-size:14px;margin:0;font-weight:600}
+  .state{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+  .state .dot{width:6px;height:6px;border-radius:50%;background:var(--ok)}
+  .topbar .right{margin-left:auto;display:flex;align-items:center;gap:8px}
+  .pill{font:inherit;font-size:12.5px;color:var(--text);background:var(--panel2);
+    border:1px solid var(--line);border-radius:999px;padding:5px 11px;cursor:pointer;display:flex;gap:6px;align-items:center}
+  .pill .caret{color:var(--faint);font-size:10px}
+  .acct{width:28px;height:28px;border-radius:50%;background:var(--panel2);border:1px solid var(--line);
+    display:grid;place-items:center;font-size:11.5px;color:var(--muted)}
+
+  .stream{flex:1;overflow-y:auto;padding:26px 0 8px}
+  .wrap{max-width:760px;margin:0 auto;padding:0 24px}
+
+  .me{background:var(--panel2);border:1px solid var(--line2);border-radius:var(--r);padding:12px 14px;margin-bottom:22px}
+  .me .who{font-size:11px;color:var(--faint);margin-bottom:4px}
+
+  .bot{font-size:14px}
+  .bot p{margin:0 0 12px}
+  .bot .think{font-size:12.5px;color:var(--muted);border-left:2px solid var(--line);padding-left:10px;margin-bottom:14px}
+
+  .tool{border:1px solid var(--line);border-radius:10px;margin:0 0 12px;overflow:hidden;background:var(--panel)}
+  .tool .head{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--panel2);
+    border-bottom:1px solid var(--line2);font-size:12px;color:var(--muted)}
+  .tool .head .name{color:var(--text);font-weight:600}
+  .tool .head .meta{margin-left:auto;color:var(--faint)}
+  .tool .body{padding:10px 12px}
+  .out{background:var(--panel2);border-radius:8px;padding:10px 12px;white-space:pre-wrap;color:var(--muted)}
+  .diff{font-family:ui-monospace,"Cascadia Code",Consolas,monospace;font-size:12.5px;line-height:1.6}
+  .diff div{padding:1px 6px;border-radius:4px}
+  .diff .add{background:color-mix(in srgb,var(--ok) 12%,transparent);color:var(--ok)}
+  .diff .del{background:color-mix(in srgb,#c0392b 12%,transparent);color:#c0392b}
+  .diff .ctx{color:var(--faint)}
+
+  .gate{border:1px solid var(--warn-line);background:var(--warn-soft);border-radius:var(--r);padding:14px 16px;margin:0 0 14px}
+  .gate h3{margin:0 0 6px;font-size:13.5px;color:var(--warn)}
+  .gate p{margin:0 0 10px;font-size:13px;color:var(--text)}
+  .gate p.small{font-size:12px;color:var(--muted);margin-bottom:12px}
+  .gate .cmd{background:var(--panel);border:1px solid var(--warn-line);border-radius:8px;
+    padding:7px 11px;margin-bottom:11px;font-family:ui-monospace,Consolas,monospace;font-size:12.5px}
+  .gate .acts{display:flex;gap:8px;align-items:center}
+  .btn{font:inherit;font-size:13px;padding:7px 13px;border-radius:9px;border:1px solid var(--line);
+    background:var(--panel);color:var(--text);cursor:pointer}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn.warn{background:var(--warn);border-color:var(--warn);color:#fff}
+  .btn.ghost{background:none;color:var(--muted)}
+  @media (prefers-color-scheme: dark){.btn.primary{color:#0d1220}}
+
+  .composer{border-top:1px solid var(--line);background:var(--panel);padding:12px 0 16px}
+  .box{max-width:760px;margin:0 auto;padding:0 24px}
+  .field{border:1px solid var(--line);border-radius:var(--r);background:var(--panel);overflow:hidden}
+  .field textarea{width:100%;border:0;background:none;color:var(--text);font:inherit;
+    padding:12px 14px 4px;resize:none;outline:none;min-height:46px}
+  .field .foot{display:flex;align-items:center;gap:8px;padding:6px 8px 8px 14px}
+  .field .foot .hint{font-size:12px;color:var(--faint)}
+  .field .foot .right{margin-left:auto;display:flex;gap:8px;align-items:center}
+  .send{width:30px;height:30px;border-radius:8px;border:1px solid var(--accent);background:var(--accent);
+    color:#fff;cursor:pointer;font-size:14px;display:grid;place-items:center}
+
+  .models{margin:10px auto 0;max-width:760px;padding:0 24px}
+  .models .panel{border:1px solid var(--line);border-radius:var(--r);background:var(--panel);padding:12px 14px;
+    box-shadow:0 8px 24px rgba(0,0,0,.06)}
+  .models h4{margin:0 0 8px;font-size:11.5px;letter-spacing:.06em;color:var(--faint);font-weight:600}
+  .mrow{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:8px;font-size:13px}
+  .mrow.on{background:var(--accent-soft)}
+  .mrow .n{font-family:ui-monospace,Consolas,monospace;font-size:12.5px}
+  .mrow .d{margin-left:auto;font-size:11.5px;color:var(--faint)}
+  .seg{display:flex;gap:4px;margin-top:6px}
+  .seg button{font:inherit;font-size:12.5px;padding:5px 11px;border-radius:8px;border:1px solid var(--line);
+    background:var(--panel);color:var(--muted);cursor:pointer}
+  .seg button.on{background:var(--accent-soft);border-color:var(--accent-line);color:var(--accent);font-weight:600}
+  .note{font-size:12px;color:var(--faint);margin-top:10px}
+
+  /* ---------- market screen ---------- */
+  #market{height:calc(100vh - 44px);overflow-y:auto}
+  .mw{max-width:1040px;margin:0 auto;padding:28px 28px 60px}
+  .mhead{display:flex;align-items:flex-end;gap:14px;border-bottom:1px solid var(--line);padding-bottom:0}
+  .mhead h2{margin:0 0 14px;font-size:19px;letter-spacing:-.01em}
+  .mhead .sub{font-size:12.5px;color:var(--muted);margin:0 0 16px}
+  .tabs{display:flex;gap:2px;margin-left:auto}
+  .tabs button{font:inherit;font-size:13px;color:var(--muted);background:none;border:0;
+    padding:9px 12px;border-bottom:2px solid transparent;cursor:pointer}
+  .tabs button.on{color:var(--text);font-weight:600;border-bottom-color:var(--accent)}
+  .search{display:flex;align-items:center;gap:10px;margin:18px 0 6px}
+  .search .input{flex:1;display:flex;align-items:center;gap:9px;border:1px solid var(--line);
+    border-radius:10px;background:var(--panel);padding:9px 12px}
+  .search .input .kw{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--muted);
+    background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:2px 7px;flex:none}
+  .search .input input{flex:1;border:0;outline:none;background:none;font:inherit;color:var(--text)}
+  .sortline{font-size:12px;color:var(--faint);margin:10px 0 18px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px}
+  .card{border:1px solid var(--line);border-radius:var(--r);background:var(--panel);padding:14px 15px;
+    display:flex;flex-direction:column;gap:9px}
+  .card .l1{display:flex;align-items:baseline;gap:8px}
+  .card .nm{font-family:ui-monospace,Consolas,monospace;font-size:13px;font-weight:600}
+  .card .by{font-size:11.5px;color:var(--faint)}
+  .card .desc{font-size:13px;color:var(--muted);margin:0}
+  .card .stats{font-size:11.5px;color:var(--faint)}
+  .chips{display:flex;flex-wrap:wrap;gap:5px}
+  .chip{font-size:11.5px;border:1px solid var(--line);background:var(--panel2);border-radius:999px;padding:2px 9px;color:var(--muted)}
+  .chip.c{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 35%,var(--line))}
+  .card .l2{display:flex;align-items:center;gap:8px;margin-top:2px}
+  .card .l2 .btn{margin-left:auto}
+
+  .dialog{border:1px solid var(--accent-line);border-radius:var(--r);background:var(--panel);
+    padding:16px 18px;margin:22px 0 0;box-shadow:0 10px 30px rgba(0,0,0,.07)}
+  .dialog h3{margin:0 0 4px;font-size:14.5px}
+  .dialog .pkg{font-family:ui-monospace,Consolas,monospace;font-size:12.5px;color:var(--muted)}
+  .rlist{margin:14px 0 0;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .rlist .r{display:flex;gap:10px;align-items:baseline;padding:9px 12px;border-bottom:1px solid var(--line2);font-size:13px}
+  .rlist .r:last-child{border-bottom:0}
+  .rlist .r .k{flex:none;font-size:11.5px;border:1px solid var(--line);border-radius:6px;padding:1px 7px;color:var(--muted)}
+  .rlist .r .v{color:var(--muted);font-size:12.5px}
+  .rlist .r code{font-family:ui-monospace,Consolas,monospace;font-size:12px;color:var(--text)}
+  .scope{margin:16px 0 0}
+  .scope label{display:flex;gap:9px;align-items:flex-start;padding:9px 11px;border:1px solid var(--line);
+    border-radius:10px;margin-bottom:7px;font-size:13px;cursor:pointer}
+  .scope label.on{border-color:var(--accent-line);background:var(--accent-soft)}
+  .scope .p{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--muted)}
+  .safety{border:1px solid var(--warn-line);background:var(--warn-soft);border-radius:10px;
+    padding:10px 12px;font-size:12.5px;color:var(--warn);margin-top:14px}
+  .dialog .acts{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
+</style>
+</head>
+<body>
+
+<div class="proto">
+  <span class="tag">原型 · 假数据 · 不连引擎</span>
+  <nav>
+    <button data-s="chat" class="on">会话</button>
+    <button data-s="market">插件市场</button>
+  </nav>
+</div>
+
+<!-- ============ 会话 ============ -->
+<section id="chat" class="screen on">
+  <aside class="rail">
+    <div class="ws">
+      <span class="dot"></span>
+      <span class="path mono">D:/tools/develop/my-app</span>
+      <span class="caret">▾</span>
+    </div>
+    <button class="newbtn">＋ 新建会话</button>
+
+    <div class="grouplabel">今天</div>
+    <div class="sess on"><span class="t">登录页表单校验改 zod</span><span class="m">2 分钟前</span></div>
+    <div class="sess"><span class="t">给导出功能加进度条</span><span class="m">1 小时前</span></div>
+
+    <div class="grouplabel">更早</div>
+    <div class="sess"><span class="t">修 CI 上偶发的超时</span><span class="m">昨天</span></div>
+    <div class="sess"><span class="t">把 API 客户端拆成独立包</span><span class="m">3 天前</span></div>
+    <div class="sess"><span class="t">无标题会话</span><span class="m">5 天前</span></div>
+
+    <div class="grouplabel">此工作区</div>
+    <div class="sess"><span class="t">工具：读取、写入、编辑</span><span class="m">shell 关闭</span></div>
+  </aside>
+
+  <div class="col">
+    <div class="topbar">
+      <h1>登录页表单校验改 zod</h1>
+      <div class="state"><span class="dot"></span>空闲</div>
+      <div class="right">
+        <button class="pill">sonnet-4.6 · 思考 中 <span class="caret">▾</span></button>
+        <div class="acct">账号</div>
+      </div>
+    </div>
+
+    <div class="stream">
+      <div class="wrap">
+        <div class="me">
+          <div class="who">你</div>
+          帮我把登录页的表单校验换成 zod，保留现有的错误文案。
+        </div>
+
+        <div class="bot">
+          <div class="think">先看现有校验逻辑再动手，避免改掉文案。</div>
+
+          <div class="tool">
+            <div class="head"><span class="name">读取</span><span class="mono">src/pages/login.tsx</span><span class="meta">128 行</span></div>
+          </div>
+
+          <div class="tool">
+            <div class="head"><span class="name">编辑</span><span class="mono">src/pages/login.tsx</span><span class="meta">+14 −9</span></div>
+            <div class="body">
+              <div class="diff">
+                <div class="ctx">  const form = useForm({</div>
+                <div class="del">-   validate: legacyValidate(schema),</div>
+                <div class="add">+   resolver: zodResolver(loginSchema),</div>
+                <div class="ctx">  });</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="gate">
+            <h3>需要运行 shell</h3>
+            <div class="cmd">npm test -- login.test.tsx</div>
+            <p>这个工作区尚未启用 shell。启用后，agent 可以在 <span class="mono">D:/tools/develop/my-app</span> 内运行任何命令，包括联网下载依赖。</p>
+            <p class="small">pi 没有沙箱。这个开关是唯一的边界，它限制的是「能不能动这个目录」，不是「命令危不危险」。请你先看一眼上面要跑的命令。</p>
+            <div class="acts">
+              <button class="btn warn">为此工作区启用 shell</button>
+              <button class="btn ghost">不用了，我自己跑</button>
+            </div>
+          </div>
+
+          <p>已经改完校验部分，等你决定要不要让我跑测试。</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="composer">
+      <div class="box">
+        <div class="field">
+          <textarea placeholder="继续说明，或按 Enter 发送">能跑测试就跑，失败的话告诉我哪里不对</textarea>
+          <div class="foot">
+            <span class="hint">＋ 图片 · 文件</span>
+            <div class="right">
+              <button class="pill">sonnet-4.6 · 思考 中 <span class="caret">▾</span></button>
+              <button class="send">↑</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="models">
+        <div class="panel">
+          <h4>模型</h4>
+          <div class="mrow on"><span class="n">sonnet-4.6</span><span class="d">日常默认</span></div>
+          <div class="mrow"><span class="n">opus-4.6</span><span class="d">更难的问题</span></div>
+          <div class="mrow"><span class="n">gemini-3-pro</span><span class="d">长上下文</span></div>
+          <h4 style="margin-top:12px">思考等级</h4>
+          <div class="seg"><button>关</button><button>低</button><button class="on">中</button><button>高</button></div>
+          <div class="note">这里刻意不出现「供应商」这一层。账号与密钥在右上角「账号」里管。</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 插件市场 ============ -->
+<section id="market" class="screen">
+  <div class="mw">
+    <div class="mhead">
+      <div>
+        <h2>插件市场</h2>
+        <p class="sub">来自 npm 上带 <span class="mono">pi-package</span> 关键字的包。安装后由 pi 本体加载。</p>
+      </div>
+      <div class="tabs">
+        <button class="on">发现</button>
+        <button>已安装 3</button>
+        <button>可更新 1</button>
+      </div>
+    </div>
+
+    <div class="search">
+      <div class="input">
+        <span class="kw">keyword:pi-package</span>
+        <input value="vim" readonly>
+      </div>
+      <button class="btn">搜索</button>
+    </div>
+    <div class="sortline">按周下载量排序 · 不做个性化推荐</div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="l1"><span class="nm">@community/pi-vim-mode</span><span class="by">community</span></div>
+        <p class="desc">在 pi 里用 vim 键位编辑提示词。</p>
+        <div class="chips"><span class="chip">扩展 ×1</span><span class="chip">技能 ×2</span></div>
+        <div class="stats">↓ 12.4k 周下载 · 3 天前更新</div>
+        <div class="l2"><span class="chip c">可安装</span><button class="btn primary">安装</button></div>
+      </div>
+
+      <div class="card">
+        <div class="l1"><span class="nm">@acme/pi-design-review</span><span class="by">acme</span></div>
+        <p class="desc">按团队规范审查前端改动，产出结构化清单。</p>
+        <div class="chips"><span class="chip">技能 ×3</span><span class="chip">模板 ×1</span></div>
+        <div class="stats">↓ 3.1k 周下载 · 2 周前更新</div>
+        <div class="l2"><span class="chip">已安装 1.2.0</span><button class="btn">更新到 1.4.0</button></div>
+      </div>
+
+      <div class="card">
+        <div class="l1"><span class="nm">pi-nord-theme</span><span class="by">larsk</span></div>
+        <p class="desc">一套 Nord 配色的终端主题。</p>
+        <div class="chips"><span class="chip">主题 ×1</span></div>
+        <div class="stats">↓ 880 周下载 · 1 个月前更新</div>
+        <div class="l2"><span class="chip">仅终端生效</span><button class="btn">安装</button></div>
+      </div>
+
+      <div class="card">
+        <div class="l1"><span class="nm">@toolbox/pi-postgres</span><span class="by">toolbox</span></div>
+        <p class="desc">连接本地 Postgres，让 agent 直接查表和看执行计划。</p>
+        <div class="chips"><span class="chip">扩展 ×2</span><span class="chip">技能 ×1</span></div>
+        <div class="stats">↓ 5.7k 周下载 · 6 天前更新</div>
+        <div class="l2"><span class="chip c">可安装</span><button class="btn primary">安装</button></div>
+      </div>
+    </div>
+
+    <div class="dialog">
+      <h3>安装 @community/pi-vim-mode</h3>
+      <div class="pkg">npm:@community/pi-vim-mode@1.4.2</div>
+
+      <div class="rlist">
+        <div class="r"><span class="k">扩展</span><span class="v"><code>extensions/vim-mode.ts</code> — 以你的身份运行的代码，与本机同权限</span></div>
+        <div class="r"><span class="k">技能</span><span class="v"><code>skills/vim-cheatsheet/</code> — 可指示模型执行任意动作</span></div>
+        <div class="r"><span class="k">技能</span><span class="v"><code>skills/refactor-helpers/</code></span></div>
+      </div>
+
+      <div class="scope">
+        <label class="on"><input type="radio" checked><span>仅此工作区<span class="p">  → .pi/settings.json，可随仓库分享给团队</span></span></label>
+        <label><input type="radio"><span>全局<span class="p">  → ~/.pi/agent/settings.json，所有工作区可用</span></span></label>
+      </div>
+
+      <div class="safety">安装前请确认你信任这个包。pi 不对第三方包做审核，扩展和技能可以读写你的文件、运行命令、访问网络。</div>
+
+      <div class="acts">
+        <button class="btn ghost">取消</button>
+        <button class="btn primary">安装到此工作区</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+  const nav = document.querySelectorAll('.proto nav button');
+  const screens = { chat: document.getElementById('chat'), market: document.getElementById('market') };
+  nav.forEach(b => b.addEventListener('click', () => {
+    nav.forEach(x => x.classList.toggle('on', x === b));
+    Object.entries(screens).forEach(([k, el]) => el.classList.toggle('on', k === b.dataset.s));
+  }));
+</script>
+</body>
+</html>

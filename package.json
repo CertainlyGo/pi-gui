@@ -1,0 +1,22 @@
+{
+  "name": "pi-gui",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "pi 的图形前端：给不愿意使用终端的用户一个窗口来驱动本地 coding agent",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.ts",
+    "smoke:engine": "node scripts/engine-smoke.ts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.85.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.2",
+    "typescript": "7.0.2"
+  }
+}
