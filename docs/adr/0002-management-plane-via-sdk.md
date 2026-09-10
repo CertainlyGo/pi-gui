@@ -16,3 +16,7 @@ RPC 协议不覆盖登录、session 列表与发现、Package 安装/更新、`s
 - `./client` 子导出指向 `src/` 源码而非 `dist/`，外部打包需要自己处理这一条。
 - GUI 的登录能力受 SDK 导出的 auth 接口限制；若上游未导出某个 OAuth 流程，v1 就只能做粘贴 API Key 与 Radius（与已定范围一致）。
 - 管理面与引擎共用 `~/.pi/agent/` 下的状态，因此 GUI 与终端里运行的 pi 会互相看到对方的改动。这是特性，但要求界面不要缓存太久。
+
+## 修正（2026-09）：`auth.json` 的窄例外
+
+SDK 根导出**没有**凭据写入器，`pi` CLI 也没有写凭据的命令（TUI 的 `/login` 是唯一官方写入路径，GUI 无法使用）。因此写入 `~/.pi/agent/auth.json` 成为管理面里唯一的直接文件写入，并被收紧到：只碰这一个文件；schema 严格照 `docs/providers.md` 的 `{ type, key }` 格式；每次写入后必须用 `pi auth check --json` 验证结果并展示给用户；文件不是合法 JSON 时**拒绝写入**而不是静默重建；只合并目标 provider，不动其它条目。实现见 `src/main/credentials.ts`。

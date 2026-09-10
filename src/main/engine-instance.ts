@@ -220,6 +220,14 @@ export class EngineInstance {
     return this.peer.request({ type: "get_state" });
   }
 
+  /** session 级用量统计（token、费用、上下文占用），见 rpc.md get_session_stats。 */
+  getSessionStats(): Promise<Record<string, unknown> | undefined> {
+    return this.peer.request({ type: "get_session_stats" }).then((response) => {
+      const data = (response as Record<string, unknown>)["data"];
+      return data === null || typeof data !== "object" ? undefined : (data as Record<string, unknown>);
+    });
+  }
+
   #handleStdout(chunk: string): void {
     const outcome = this.#decoder.push(chunk);
     for (const error of outcome.errors) this.#options.onWarning?.(error);

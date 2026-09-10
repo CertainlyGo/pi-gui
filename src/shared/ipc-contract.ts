@@ -15,6 +15,43 @@ export interface EngineStatusSnapshot {
   readonly pid: number | undefined;
 }
 
+/** get_session_stats 的响应 data（rpc.md），字段全部可选，渲染层按 0/缺省兜底。 */
+export interface SessionStatsData {
+  readonly tokens?: {
+    readonly input?: number;
+    readonly output?: number;
+    readonly cacheRead?: number;
+    readonly cacheWrite?: number;
+    readonly total?: number;
+  };
+  readonly cost?: number;
+  readonly contextUsage?: {
+    readonly tokens?: number | null;
+    readonly contextWindow?: number;
+    readonly percent?: number | null;
+  };
+}
+
+/** 账号页里一个已配置的 provider（key 只露尾巴）。 */
+export interface CredentialInfo {
+  readonly provider: string;
+  readonly type: string;
+  readonly keyMasked: string;
+}
+
+export interface AuthCheckOutcome {
+  readonly ok: boolean;
+  readonly status: "ready" | "not_ready" | "error";
+  readonly reason?: string;
+  readonly message?: string;
+}
+
+export interface AuthSetOutcome {
+  readonly ok: boolean;
+  readonly error?: string;
+  readonly check?: AuthCheckOutcome;
+}
+
 /** main → renderer 推送的引擎事件载荷。 */
 export interface EngineEventPayload<M = unknown> {
   readonly workspace: string;
@@ -50,4 +87,11 @@ export interface PiGuiApi {
   onStatus(listener: (payload: EngineStatusSnapshot) => void): () => void;
   onWarning(listener: (payload: EngineWarningPayload) => void): () => void;
   onUiRequest(listener: (payload: EngineUiRequestPayload) => void): () => void;
+
+  /** session 用量统计：token、费用、上下文占用。 */
+  getStats(workspace: string): Promise<SessionStatsData | null>;
+
+  listCredentials(): Promise<CredentialInfo[]>;
+  setCredential(provider: string, key: string): Promise<AuthSetOutcome>;
+  removeCredential(provider: string): Promise<boolean>;
 }
