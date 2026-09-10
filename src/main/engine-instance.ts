@@ -228,6 +228,36 @@ export class EngineInstance {
     });
   }
 
+  listModels(): Promise<readonly Record<string, unknown>[]> {
+    return this.peer.request({ type: "get_available_models" }).then((response) => {
+      const data = (response as Record<string, unknown>)["data"];
+      const models = data !== null && typeof data === "object"
+        ? (data as Record<string, unknown>)["models"]
+        : undefined;
+      return Array.isArray(models)
+        ? (models as readonly Record<string, unknown>[])
+        : [];
+    });
+  }
+
+  setModel(provider: string, modelId: string): Promise<Record<string, unknown>> {
+    return this.peer.request({ type: "set_model", provider, modelId });
+  }
+
+  listThinkingLevels(): Promise<readonly string[]> {
+    return this.peer.request({ type: "get_available_thinking_levels" }).then((response) => {
+      const data = (response as Record<string, unknown>)["data"];
+      const levels = data !== null && typeof data === "object"
+        ? (data as Record<string, unknown>)["levels"]
+        : undefined;
+      return Array.isArray(levels) ? (levels as readonly string[]) : ["off"];
+    });
+  }
+
+  setThinkingLevel(level: string): Promise<Record<string, unknown>> {
+    return this.peer.request({ type: "set_thinking_level", level });
+  }
+
   #handleStdout(chunk: string): void {
     const outcome = this.#decoder.push(chunk);
     for (const error of outcome.errors) this.#options.onWarning?.(error);

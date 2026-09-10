@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { JSX } from "react";
-import type { EngineEventPayload, SessionStatsData } from "../../shared/ipc-contract.ts";
+import type { EngineEventPayload, ModelPickerData, SessionStatsData } from "../../shared/ipc-contract.ts";
 
 type ItemKind = "user" | "assistant" | "tool" | "bash" | "system";
 
@@ -10,6 +10,10 @@ interface Item {
   title?: string;
   state?: string;
   text: string;
+  /** 工具调用的参数（美化后的 JSON），展开时展示。 */
+  args?: string;
+  /** 工具执行的输出（累计），展开时展示。 */
+  output?: string;
 }
 
 interface StatsState {
@@ -62,6 +66,42 @@ function formatCount(value: number): string {
   return String(value);
 }
 
+function readObj(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+/** 参数序列化成可读 JSON（失败时退回原文）。 */
+function prettyJson(value: unknown): string {
+  if (typeof value === "string") {
+    try {
+      return JSON.stringify(JSON.parse(value) as unknown, null, 2);
+    } catch {
+      return value;
+    }
+  }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+/** 从工具执行结果的 { content: [{type:"text",text}] } 里抽出纯文本。 */
+function toolResultText(value: unknown): string | undefined {
+  const result = readObj(value);
+  if (typeof result["text"] === "string" && result["text"].length > 0) return result["text"];
+  const content = result["content"];
+  if (!Array.isArray(content)) return undefined;
+  const parts: string[] = [];
+  for (const part of content) {
+    const entry = readObj(part);
+    if (typeof entry["text"] === "string" && entry["text"].length > 0) parts.push(entry["text"]);
+  }
+  return parts.length > 0 ? parts.join("\n") : undefined;
+}
+
 /**
  * 会话页：打开工作区 → 启动引擎 → 发 prompt → 事件流渲染。
  * 底部是 token/上下文/缓存/速度统计条；右上角账号页管凭据（写 auth.json，
@@ -75,6 +115,16 @@ export function App(): JSX.Element {
   const [input, setInput] = useState("");
   const [stats, setStats] = useState<StatsState>(ZERO_STATS);
   const [streamSpeed, setStreamSpeed] = useState<number | null>(null);
+  const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(new Set());
+
+  function toggleExpanded(id: string): void {
+    setExpandedIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   const itemsRef = useRef<Item[]>([]);
   const itemIdsRef = useRef<string[]>([]);
@@ -96,11 +146,26 @@ export function App(): JSX.Element {
 
   function patchOrCreateItem(
     id: string,
-    patch: { kind: ItemKind; title?: string; state?: string; text?: string },
+    patch: {
+      kind: ItemKind;
+      title?: string;
+      state?: string;
+      text?: string;
+      args?: string;
+      output?: string;
+    },
   ): void {
     const index = itemIdsRef.current.indexOf(id);
     if (index === -1) {
-      pushItem({ kind: patch.kind, id, text: patch.text ?? "", ...(patch.title !== undefined ? { title: patch.title } : {}), ...(patch.state !== undefined ? { state: patch.state } : {}) });
+      pushItem({
+        kind: patch.kind,
+        id,
+        text: patch.text ?? "",
+        ...(patch.title !== undefined ? { title: patch.title } : {}),
+        ...(patch.state !== undefined ? { state: patch.state } : {}),
+        ...(patch.args !== undefined ? { args: patch.args } : {}),
+        ...(patch.output !== undefined ? { output: patch.output } : {}),
+      });
       return;
     }
     const existing = itemsRef.current[index]!;
@@ -109,6 +174,8 @@ export function App(): JSX.Element {
       ...patch,
       ...(patch.title !== undefined ? { title: patch.title } : {}),
       ...(patch.state !== undefined ? { state: patch.state } : {}),
+      ...(patch.args !== undefined ? { args: patch.args } : {}),
+      ...(patch.output !== undefined ? { output: patch.output } : {}),
     };
     rerender();
   }
@@ -179,18 +246,55 @@ export function App(): JSX.Element {
         }
         return;
       }
-      if (type === "tool_execution_start" || type === "tool_execution_update") {
-        const id = str(record["id"]) ?? `tool-${++msgSeq}`;
-        const title = str(record["toolName"]) ?? str(record["name"]) ?? "工具";
-        const state = str(record["state"]);
-        patchOrCreateItem(id, { kind: "tool", title, ...(state !== undefined ? { state } : {}) });
+      if (type === "tool_execution_start") {
+        // toolCallId 与 toolcall_start 的 id 相同，两类事件会合并成同一张卡片。
+        const id = str(record["toolCallId"]) ?? `tool-${++msgSeq}`;
+        const title = str(record["toolName"]) ?? "工具";
+        const args = readObj(record["args"]);
+        patchOrCreateItem(id, {
+          kind: "tool",
+          title,
+          state: "运行中",
+          ...(Object.keys(args).length > 0 ? { args: prettyJson(args) } : {}),
+        });
+        return;
+      }
+      if (type === "tool_execution_update") {
+        const id = str(record["toolCallId"]) ?? `tool-${++msgSeq}`;
+        const title = str(record["toolName"]) ?? "工具";
+        const output = toolResultText(record["partialResult"]);
+        patchOrCreateItem(id, {
+          kind: "tool",
+          title,
+          state: "运行中",
+          ...(output !== undefined ? { output } : {}),
+        });
+        return;
+      }
+      if (type === "tool_execution_end") {
+        const id = str(record["toolCallId"]) ?? `tool-${++msgSeq}`;
+        const title = str(record["toolName"]) ?? "工具";
+        const output = toolResultText(record["result"]);
+        const isError = record["isError"] === true;
+        patchOrCreateItem(id, {
+          kind: "tool",
+          title,
+          state: isError ? "失败" : "完成",
+          ...(output !== undefined ? { output } : {}),
+        });
         return;
       }
       if (type === "bash_execution_update") {
         const id = str(record["id"]) ?? `bash-${++msgSeq}`;
-        const title = str(record["command"]) ?? "shell";
-        const state = str(record["state"]);
-        patchOrCreateItem(id, { kind: "bash", title, ...(state !== undefined ? { state } : {}) });
+        const delta = str(record["delta"]) ?? "";
+        const index = itemIdsRef.current.indexOf(id);
+        const current = index === -1 ? undefined : itemsRef.current[index];
+        patchOrCreateItem(id, {
+          kind: "bash",
+          title: str(record["command"]) ?? "shell",
+          state: "运行中",
+          output: (current?.output ?? "") + delta,
+        });
         return;
       }
       if (type === "user_message") {
@@ -313,6 +417,7 @@ export function App(): JSX.Element {
           {status}
         </div>
         <div className="spacer" />
+        <ModelPicker workspace={workspace} />
         <AccountButton onChanged={() => rerender()} />
         <button className="btn ghost" onClick={() => void openWorkspace()} disabled={busy}>
           {workspace === null ? "选择工作区" : "更换工作区"}
@@ -336,7 +441,12 @@ export function App(): JSX.Element {
         )}
         <div className="wrap">
           {items.map((item) => (
-            <ItemView key={item.id} item={item} />
+            <ItemView
+              key={item.id}
+              item={item}
+              expanded={expandedIds.has(item.id)}
+              onToggle={() => toggleExpanded(item.id)}
+            />
           ))}
         </div>
         <div ref={streamEndRef} />
@@ -568,7 +678,165 @@ function AccountButton({ onChanged }: { onChanged: () => void }): JSX.Element {
   );
 }
 
-function ItemView({ item }: { item: Item }): JSX.Element {
+const LEVEL_LABELS: Record<string, string> = {
+  off: "关",
+  minimal: "极简",
+  low: "低",
+  medium: "中",
+  high: "高",
+  xhigh: "超高",
+  max: "最大",
+};
+
+/**
+ * 模型选择器：按供应商分组列出可用模型（供应商在这里是选择维度，
+ * 凭据与开关在账号页），底部是思考等级。选择会持久化为 session 默认。
+ */
+function ModelPicker({ workspace }: { workspace: string | null }): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const [data, setData] = useState<ModelPickerData | null>(null);
+  const [configured, setConfigured] = useState<ReadonlySet<string>>(new Set());
+  const [error, setError] = useState<string | null>(null);
+
+  async function toggle(): Promise<void> {
+    const next = !open;
+    setOpen(next);
+    if (!next || workspace === null) return;
+    setError(null);
+    try {
+      const [models, credentials] = await Promise.all([
+        window.piGui.getModels(workspace),
+        window.piGui.listCredentials(),
+      ]);
+      setData(models);
+      setConfigured(new Set(credentials.map((entry) => entry.provider)));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
+
+  async function refreshCurrent(): Promise<void> {
+    if (workspace === null) return;
+    try {
+      setData(await window.piGui.getModels(workspace));
+      setError(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
+
+  async function selectModel(model: { id: string; provider: string }): Promise<void> {
+    if (workspace === null) return;
+    const result = await window.piGui.setModel(workspace, model.provider, model.id);
+    if (!result.ok) {
+      setError(result.error ?? "设置失败");
+      return;
+    }
+    await refreshCurrent();
+  }
+
+  async function selectThinking(level: string): Promise<void> {
+    if (workspace === null) return;
+    const result = await window.piGui.setThinkingLevel(workspace, level);
+    if (!result.ok) {
+      setError(result.error ?? "设置失败");
+      return;
+    }
+    await refreshCurrent();
+  }
+
+  const models = data?.models ?? [];
+  const current = data?.current;
+  const currentModel = current?.modelId === undefined ? undefined : current;
+  const currentName =
+    currentModel === undefined
+      ? undefined
+      : (models.find((model) => model.id === currentModel.modelId)?.name ?? currentModel.modelId);
+  const pillLabel =
+    currentModel === undefined
+      ? "选择模型"
+      : `${currentModel.provider ?? "?"} · ${currentName ?? currentModel.modelId}`;
+
+  const byProvider = new Map<string, Array<{ id: string; name: string; provider: string }>>();
+  for (const model of models) {
+    const list = byProvider.get(model.provider) ?? [];
+    list.push(model);
+    byProvider.set(model.provider, list);
+  }
+  const groups = [...byProvider.entries()].sort(
+    (a, b) => Number(configured.has(b[0])) - Number(configured.has(a[0])),
+  );
+
+  return (
+    <div className="model-wrap">
+      <button
+        className="pill"
+        onClick={() => void toggle()}
+        disabled={workspace === null}
+        title={workspace === null ? "先选择工作区" : "切换模型 / 供应商 / 思考等级"}
+      >
+        {pillLabel} <span className="caret">▾</span>
+      </button>
+      {open && (
+        <div className="model-popover">
+          {error !== null && <p className="model-error">{error}</p>}
+          {data === null && <p className="model-empty">加载模型清单…</p>}
+          {groups.length === 0 && data !== null && (
+            <p className="model-empty">没有可用模型（先到账号页配置凭据？）</p>
+          )}
+          {groups.map(([provider, providerModels]) => (
+            <div key={provider} className="model-group">
+              <div className="model-group-head">
+                <span className="model-provider">{provider}</span>
+                <span className={`provider-badge ${configured.has(provider) ? "on" : ""}`}>
+                  {configured.has(provider) ? "已配置" : "未配置凭据"}
+                </span>
+              </div>
+              {providerModels.map((model) => (
+                <button
+                  key={model.id}
+                  type="button"
+                  className={`model-row ${current?.modelId === model.id ? "on" : ""}`}
+                  onClick={() => void selectModel(model)}
+                >
+                  <span className="model-name">{model.name}</span>
+                  <span className="model-id">{model.id}</span>
+                </button>
+              ))}
+            </div>
+          ))}
+          {data !== null && data.thinkingLevels.length > 0 && (
+            <div className="model-group thinking">
+              <div className="model-group-head">思考等级</div>
+              <div className="level-row">
+                {data.thinkingLevels.map((level) => (
+                  <button
+                    key={level}
+                    type="button"
+                    className={`level-btn ${current?.thinkingLevel === level ? "on" : ""}`}
+                    onClick={() => void selectThinking(level)}
+                  >
+                    {LEVEL_LABELS[level] ?? level}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ItemView({
+  item,
+  expanded,
+  onToggle,
+}: {
+  item: Item;
+  expanded: boolean;
+  onToggle: () => void;
+}): JSX.Element {
   if (item.kind === "user") {
     return (
       <div className="me">
@@ -583,9 +851,40 @@ function ItemView({ item }: { item: Item }): JSX.Element {
   if (item.kind === "tool" || item.kind === "bash") {
     return (
       <div className="tool-card">
-        <span className="tool-type">{item.kind === "bash" ? "shell" : "工具"}</span>
-        <code>{item.title}</code>
-        {item.state !== undefined && <span className="tool-state">{item.state}</span>}
+        <button
+          type="button"
+          className="tool-head"
+          onClick={onToggle}
+          title={expanded ? "收起" : "展开具体内容"}
+        >
+          <span className="tool-type">{item.kind === "bash" ? "shell" : "工具"}</span>
+          <code>{item.title}</code>
+          {item.state !== undefined && (
+            <span className={`tool-state ${item.state === "失败" ? "bad" : ""}`}>
+              {item.state}
+            </span>
+          )}
+          <span className={`tool-caret ${expanded ? "open" : ""}`}>▾</span>
+        </button>
+        {expanded && (
+          <div className="tool-details">
+            {item.args !== undefined && (
+              <div className="tool-detail-block">
+                <div className="tool-detail-label">参数</div>
+                <pre className="tool-args">{item.args}</pre>
+              </div>
+            )}
+            {item.output !== undefined && (
+              <div className="tool-detail-block">
+                <div className="tool-detail-label">输出</div>
+                <pre className="tool-output">{item.output}</pre>
+              </div>
+            )}
+            {item.args === undefined && item.output === undefined && (
+              <div className="tool-detail-empty">（没有更多信息）</div>
+            )}
+          </div>
+        )}
       </div>
     );
   }

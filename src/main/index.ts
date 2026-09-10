@@ -42,6 +42,17 @@ function maskKey(key: string): string {
   return `••••${key.slice(-4)}`;
 }
 
+function readObj(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function modelField(model: Record<string, unknown>, key: string): string | undefined {
+  const value = model[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
 function createWindow(): void {
   const window = new BrowserWindow({
     width: 1200,
@@ -112,6 +123,54 @@ app.whenReady().then(() => {
     const instance = engines.get(workspace);
     if (instance.status !== "ready") return null;
     return await instance.getSessionStats() ?? null;
+  });
+
+  ipcMain.handle("engine:get-models", async (_event, workspace: string) => {
+    const instance = engines.get(workspace);
+    if (instance.status !== "ready") return null;
+    const models = (await instance.listModels()).map((model) => ({
+      id: modelField(model, "id") ?? "unknown",
+      name: modelField(model, "name") ?? modelField(model, "id") ?? "未知模型",
+      provider: modelField(model, "provider") ?? "?",
+    }));
+    let thinkingLevels: readonly string[] = ["off"];
+    try {
+      const levels = await instance.listThinkingLevels();
+      if (levels.length > 0) thinkingLevels = levels;
+    } catch {
+      // 当前模型不支持思考时保持 ["off"]
+    }
+    const state = await instance.getState();
+    const stateData = readObj(state["data"]);
+    const model = readObj(stateData["model"]);
+    const current: { modelId?: string; provider?: string; thinkingLevel?: string } = {};
+    const modelId = modelField(model, "id");
+    if (modelId !== undefined) {
+      current["modelId"] = modelId;
+      const provider = modelField(model, "provider");
+      if (provider !== undefined) current["provider"] = provider;
+    }
+    const thinkingLevel = stateData["thinkingLevel"];
+    if (typeof thinkingLevel === "string") current["thinkingLevel"] = thinkingLevel;
+    return { models, thinkingLevels, current };
+  });
+
+  ipcMain.handle("engine:set-model", async (_event, workspace: string, provider: string, modelId: string) => {
+    try {
+      await engines.get(workspace).setModel(provider, modelId);
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  ipcMain.handle("engine:set-thinking", async (_event, workspace: string, level: string) => {
+    try {
+      await engines.get(workspace).setThinkingLevel(level);
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
   });
 
   // ---- 凭据（账号页）----

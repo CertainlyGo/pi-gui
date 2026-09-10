@@ -52,6 +52,21 @@ export interface AuthSetOutcome {
   readonly check?: AuthCheckOutcome;
 }
 
+/** 模型选择器用到的数据：模型清单 + 思考等级 + 当前选择。 */
+export interface ModelPickerData {
+  readonly models: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly provider: string;
+  }[];
+  readonly thinkingLevels: readonly string[];
+  readonly current: {
+    readonly modelId?: string;
+    readonly provider?: string;
+    readonly thinkingLevel?: string;
+  };
+}
+
 /** main → renderer 推送的引擎事件载荷。 */
 export interface EngineEventPayload<M = unknown> {
   readonly workspace: string;
@@ -90,6 +105,10 @@ export interface PiGuiApi {
 
   /** session 用量统计：token、费用、上下文占用。 */
   getStats(workspace: string): Promise<SessionStatsData | null>;
+
+  getModels(workspace: string): Promise<ModelPickerData | null>;
+  setModel(workspace: string, provider: string, modelId: string): Promise<{ ok: boolean; error?: string }>;
+  setThinkingLevel(workspace: string, level: string): Promise<{ ok: boolean; error?: string }>;
 
   listCredentials(): Promise<CredentialInfo[]>;
   setCredential(provider: string, key: string): Promise<AuthSetOutcome>;

@@ -18,6 +18,11 @@ const api: PiGuiApi = {
   abort: (workspace) => ipcRenderer.invoke("engine:abort", workspace),
   getState: (workspace) => ipcRenderer.invoke("engine:get-state", workspace),
   getStats: (workspace) => ipcRenderer.invoke("engine:get-stats", workspace),
+  getModels: (workspace) => ipcRenderer.invoke("engine:get-models", workspace),
+  setModel: (workspace, provider, modelId) =>
+    ipcRenderer.invoke("engine:set-model", workspace, provider, modelId),
+  setThinkingLevel: (workspace, level) =>
+    ipcRenderer.invoke("engine:set-thinking", workspace, level),
   listCredentials: () => ipcRenderer.invoke("auth:list"),
   setCredential: (provider, key) => ipcRenderer.invoke("auth:set", provider, key),
   removeCredential: (provider) => ipcRenderer.invoke("auth:remove", provider),
