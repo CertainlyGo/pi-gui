@@ -7,6 +7,8 @@ import type {
   SessionStatsData,
   SessionSummary,
 } from "../../shared/ipc-contract.ts";
+import { parseUnifiedDiff } from "./diff.ts";
+import type { ParsedDiff } from "./diff.ts";
 
 type ItemKind = "user" | "assistant" | "tool" | "bash" | "system";
 
@@ -20,6 +22,8 @@ interface Item {
   args?: string;
   /** 工具执行的输出（累计），展开时展示。 */
   output?: string;
+  /** edit 工具返回的 unified diff 文本。 */
+  diff?: string;
 }
 
 interface StatsState {
@@ -180,6 +184,7 @@ export function App(): JSX.Element {
       text?: string;
       args?: string;
       output?: string;
+      diff?: string;
     },
   ): void {
     const index = itemIdsRef.current.indexOf(id);
@@ -192,6 +197,7 @@ export function App(): JSX.Element {
         ...(patch.state !== undefined ? { state: patch.state } : {}),
         ...(patch.args !== undefined ? { args: patch.args } : {}),
         ...(patch.output !== undefined ? { output: patch.output } : {}),
+        ...(patch.diff !== undefined ? { diff: patch.diff } : {}),
       });
       return;
     }
@@ -203,6 +209,7 @@ export function App(): JSX.Element {
       ...(patch.state !== undefined ? { state: patch.state } : {}),
       ...(patch.args !== undefined ? { args: patch.args } : {}),
       ...(patch.output !== undefined ? { output: patch.output } : {}),
+      ...(patch.diff !== undefined ? { diff: patch.diff } : {}),
     };
     rerender();
   }
@@ -381,11 +388,14 @@ export function App(): JSX.Element {
         const title = str(record["toolName"]) ?? "工具";
         const output = toolResultText(record["result"]);
         const isError = record["isError"] === true;
+        const resultDetails = readObj(readObj(record["result"])["details"]);
+        const diff = str(resultDetails["diff"]) ?? str(resultDetails["patch"]);
         patchOrCreateItem(id, {
           kind: "tool",
           title,
           state: isError ? "失败" : "完成",
           ...(output !== undefined ? { output } : {}),
+          ...(diff !== undefined ? { diff } : {}),
         });
         return;
       }
@@ -1296,6 +1306,36 @@ function ExtensionDialog({
   );
 }
 
+function DiffView({ text }: { text: string }): JSX.Element {
+  const parsed: ParsedDiff = parseUnifiedDiff(text);
+  return (
+    <div className="diffview">
+      <div className="diff-summary">
+        <span className="diff-num add">+{parsed.additions}</span>
+        <span className="diff-num del">-{parsed.deletions}</span>
+      </div>
+      <div className="diff-rows">
+        {parsed.rows.map((row, index) => (
+          <div key={index} className={`diff-line ${row.kind}`}>
+            <span className="diff-ln">{row.lineNumber === null ? "" : row.lineNumber}</span>
+            <span className="diff-code">{row.text}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function writeContentOf(argsJson: string): string {
+  try {
+    const parsed = JSON.parse(argsJson) as Record<string, unknown>;
+    const content = parsed["content"];
+    return typeof content === "string" ? content : argsJson;
+  } catch {
+    return argsJson;
+  }
+}
+
 function ItemView({
   item,
   expanded,
@@ -1334,21 +1374,37 @@ function ItemView({
         </button>
         {expanded && (
           <div className="tool-details">
-            {item.args !== undefined && (
+            {item.diff !== undefined && (
+              <div className="tool-detail-block">
+                <div className="tool-detail-label">变更</div>
+                <DiffView text={item.diff} />
+              </div>
+            )}
+            {item.kind === "tool" &&
+              item.title?.toLowerCase().includes("write") &&
+              item.args !== undefined && (
+                <div className="tool-detail-block">
+                  <div className="tool-detail-label">写入内容</div>
+                  <pre className="tool-output">{writeContentOf(item.args)}</pre>
+                </div>
+              )}
+            {item.args !== undefined && item.diff === undefined && item.kind !== "bash" && (
               <div className="tool-detail-block">
                 <div className="tool-detail-label">参数</div>
                 <pre className="tool-args">{item.args}</pre>
               </div>
             )}
-            {item.output !== undefined && (
+            {item.output !== undefined && item.diff === undefined && (
               <div className="tool-detail-block">
                 <div className="tool-detail-label">输出</div>
                 <pre className="tool-output">{item.output}</pre>
               </div>
             )}
-            {item.args === undefined && item.output === undefined && (
-              <div className="tool-detail-empty">（没有更多信息）</div>
-            )}
+            {item.diff === undefined &&
+              item.args === undefined &&
+              item.output === undefined && (
+                <div className="tool-detail-empty">（没有更多信息）</div>
+              )}
           </div>
         )}
       </div>
