@@ -46,7 +46,7 @@ export interface EngineInstanceOptions {
   readonly idleTimeoutMs?: number;
   readonly now?: () => number;
   readonly onEvent?: (message: unknown) => void;
-  readonly onStatusChange?: (status: EngineStatus) => void;
+  readonly onStatusChange?: (status: EngineStatus, instance: EngineInstance) => void;
   readonly onExtensionUiRequest?: (request: ExtensionUiRequest) => void;
   /** 协议层面的问题（坏记录、stderr 异常）。不致命，但要能让用户看见。 */
   readonly onWarning?: (error: Error) => void;
@@ -204,8 +204,12 @@ export class EngineInstance {
     return this.#idleTimeoutMs;
   }
 
-  prompt(text: string): Promise<Record<string, unknown>> {
-    return this.peer.request({ type: "prompt", message: text });
+  prompt(text: string, streamingBehavior?: "steer" | "followUp"): Promise<Record<string, unknown>> {
+    return this.peer.request({
+      type: "prompt",
+      message: text,
+      ...(streamingBehavior !== undefined ? { streamingBehavior } : {}),
+    });
   }
 
   abort(): Promise<Record<string, unknown>> {
@@ -263,6 +267,6 @@ export class EngineInstance {
   #setStatus(status: EngineStatus): void {
     if (this.#status === status) return;
     this.#status = status;
-    this.#options.onStatusChange?.(status);
+    this.#options.onStatusChange?.(status, this);
   }
 }
