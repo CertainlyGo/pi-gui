@@ -59,18 +59,6 @@ interface UiDialog {
   readonly options?: readonly string[];
 }
 
-const PROVIDER_DATALIST = [
-  "openai",
-  "anthropic",
-  "google",
-  "openrouter",
-  "xai",
-  "deepseek",
-  "together",
-  "qwen-token-plan",
-  "radius",
-] as const;
-
 const OAUTH_PROVIDERS: readonly { id: string; label: string }[] = [
   { id: "openai-codex", label: "OpenAI Codex（ChatGPT 订阅）" },
   { id: "anthropic", label: "Claude Pro / Max" },
@@ -167,6 +155,7 @@ export function App(): JSX.Element {
     file: string | null;
   } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  const autoNamedRef = useRef<string | null>(null);
 
   const itemsRef = useRef<Item[]>([]);
   const itemIdsRef = useRef<string[]>([]);
@@ -419,9 +408,25 @@ export function App(): JSX.Element {
     const text = input.trim();
     if (workspace === null || text.length === 0) return;
     setInput("");
+    const isFirstMessage = itemsRef.current.length === 0;
     pushItem({ kind: "user", id: `user-${Date.now()}`, text });
     const behavior = busyRef.current ? "steer" : undefined;
     await window.piGui.prompt(workspace, text, behavior);
+    // 新会话用第一条问题命名（有历史消息的会话不重命名）
+    if (
+      isFirstMessage &&
+      currentSession !== null &&
+      autoNamedRef.current !== currentSession.id
+    ) {
+      autoNamedRef.current = currentSession.id;
+      const firstLine = text.split(/\r?\n/, 1)[0] ?? "";
+      const name = firstLine.length > 40 ? `${firstLine.slice(0, 40)}…` : firstLine;
+      const named = await window.piGui.setSessionName(workspace, name);
+      if (named.ok) {
+        await syncCurrentSession(workspace);
+        refreshSessions(workspace);
+      }
+    }
     streamEndRef.current?.scrollIntoView({ block: "end" });
   }
 
@@ -1137,9 +1142,10 @@ function AccountButton({
   const [providers, setProviders] = useState<
     Array<{ provider: string; type: string; keyMasked: string }>
   >([]);
-  const [provider, setProvider] = useState("openai");
-  const [key, setKey] = useState("");
-  const [saving, setSaving] = useState(false);
+  const [apiFormat, setApiFormat] = useState<"openai" | "anthropic">("openai");
+  const [apiBaseUrl, setApiBaseUrl] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [apiSaving, setApiSaving] = useState(false);
   const [outcome, setOutcome] = useState<{ ok: boolean; text: string } | null>(null);
   const [oauthBusy, setOauthBusy] = useState<string | null>(null);
   const [oauthStatus, setOauthStatus] = useState<string | null>(null);
@@ -1178,12 +1184,12 @@ function AccountButton({
     };
   }, []);
 
-  async function save(): Promise<void> {
-    if (provider.trim().length === 0 || key.trim().length === 0) return;
-    setSaving(true);
+  async function saveApi(): Promise<void> {
+    if (apiBaseUrl.trim().length === 0 || apiKey.trim().length === 0) return;
+    setApiSaving(true);
     setOutcome(null);
-    const result = await window.piGui.setCredential(provider.trim().toLowerCase(), key.trim());
-    setSaving(false);
+    const result = await window.piGui.setApiCredential(apiFormat, apiBaseUrl.trim(), apiKey.trim());
+    setApiSaving(false);
     if (!result.ok) {
       setOutcome({ ok: false, text: result.error ?? "保存失败" });
       return;
@@ -1192,12 +1198,12 @@ function AccountButton({
     if (check === undefined) {
       setOutcome({ ok: true, text: "已保存（未验证）" });
     } else if (check.status === "ready") {
-      setOutcome({ ok: true, text: `已保存，${provider} 就绪` });
+      setOutcome({ ok: true, text: `已保存，${apiFormat === "openai" ? "OpenAI 兼容" : "Anthropic 兼容"} 端点就绪` });
     } else {
       const detail = check.reason ?? check.message ?? "凭据未被识别";
       setOutcome({ ok: false, text: `已保存，但未就绪：${detail}` });
     }
-    setKey("");
+    setApiKey("");
     refreshList();
     onChanged();
   }
@@ -1289,26 +1295,49 @@ function AccountButton({
               ))}
             </div>
 
-            <div className="cred-form">
+            <div className="api-login">
+              <div className="api-head">API Key（自定义网关 / 兼容接口）</div>
+              <div className="fmt-cards">
+                <button
+                  type="button"
+                  className={`fmt-card ${apiFormat === "openai" ? "on" : ""}`}
+                  onClick={() => setApiFormat("openai")}
+                >
+                  <span className="fmt-name">OpenAI 兼容</span>
+                  <span className="fmt-desc">OpenAI、DeepSeek 及各类 /v1 网关</span>
+                </button>
+                <button
+                  type="button"
+                  className={`fmt-card ${apiFormat === "anthropic" ? "on" : ""}`}
+                  onClick={() => setApiFormat("anthropic")}
+                >
+                  <span className="fmt-name">Anthropic 兼容</span>
+                  <span className="fmt-desc">Claude 官方端点或兼容网关</span>
+                </button>
+              </div>
               <input
-                list="pi-providers"
-                placeholder="provider（如 openai、anthropic、radius）"
-                value={provider}
-                onChange={(event) => setProvider(event.target.value)}
+                placeholder={
+                  apiFormat === "openai"
+                    ? "API 网址（如 https://api.openai.com/v1）"
+                    : "API 网址（如 https://api.anthropic.com）"
+                }
+                value={apiBaseUrl}
+                onChange={(event) => setApiBaseUrl(event.target.value)}
               />
-              <datalist id="pi-providers">
-                {PROVIDER_DATALIST.map((name) => (
-                  <option key={name} value={name} />
-                ))}
-              </datalist>
               <input
                 type="password"
-                placeholder="API Key / Token"
-                value={key}
-                onChange={(event) => setKey(event.target.value)}
+                placeholder="API Key"
+                value={apiKey}
+                onChange={(event) => setApiKey(event.target.value)}
               />
-              <button className="btn primary" onClick={() => void save()} disabled={saving}>
-                {saving ? "保存并验证…" : "保存并验证"}
+              <button
+                className="btn primary full"
+                onClick={() => void saveApi()}
+                disabled={apiSaving || apiBaseUrl.trim().length === 0 || apiKey.trim().length === 0}
+              >
+                {apiSaving
+                  ? "保存并验证…"
+                  : `保存并验证（${apiFormat === "openai" ? "OpenAI 兼容" : "Anthropic 兼容"}）`}
               </button>
             </div>
 

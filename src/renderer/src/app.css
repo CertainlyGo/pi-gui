@@ -467,6 +467,85 @@ body {
   align-self: flex-end;
 }
 
+/* ---------- API 登录（格式卡片）---------- */
+
+.api-login {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.api-head {
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  color: var(--faint);
+  margin-bottom: 2px;
+}
+
+.fmt-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.fmt-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.fmt-card:hover {
+  border-color: var(--accent-line);
+}
+
+.fmt-card.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.fmt-name {
+  font-weight: 600;
+}
+
+.fmt-card.on .fmt-name {
+  color: var(--accent);
+}
+
+.fmt-desc {
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.api-login input {
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 9px 11px;
+  outline: none;
+}
+
+.api-login input:focus {
+  border-color: var(--accent-line);
+}
+
+.btn.full {
+  width: 100%;
+}
+
 .cred-outcome {
   margin: 10px 0 0;
   font-size: 12.5px;

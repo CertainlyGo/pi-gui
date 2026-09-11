@@ -51,4 +51,35 @@ describe("listWorkspaceSessions", () => {
     assert.equal(sessions.length, 2); // a + b，broken 被跳过
     assert.deepEqual(listWorkspaceSessions(dir, "C:/nope"), []);
   });
+
+  it("展示名回退到首条用户消息（会话用第一条问题命名）", async () => {
+    const sessionDir = workspaceSessionDir(dir, "C:/Users/gg/ws2");
+    await mkdir(sessionDir, { recursive: true });
+    // 真实文件结构：首条是 session 头，用户消息随后，名字从未显式设置
+    await writeFile(
+      join(sessionDir, "real.jsonl"),
+      [
+        '{"type":"session","version":3,"id":"u1","timestamp":"2026-01-01T00:00:00.000Z"}',
+        '{"type":"message","id":"m1","message":{"role":"user","content":"帮我把登录页改成 zod"}}',
+        '{"type":"message","id":"m2","message":{"role":"assistant","content":[{"type":"text","text":"好"}]}}',
+      ].join("\n"),
+      "utf8",
+    );
+    const sessions = listWorkspaceSessions(dir, "C:/Users/gg/ws2");
+    assert.equal(sessions.length, 1);
+    assert.equal(sessions[0]?.name, "帮我把登录页改成 zod");
+  });
+
+  it("超长首条问题被截断到 40 字", async () => {
+    const sessionDir = workspaceSessionDir(dir, "C:/Users/gg/ws3");
+    await mkdir(sessionDir, { recursive: true });
+    const longText = "请" .repeat(60);
+    await writeFile(
+      join(sessionDir, "long.jsonl"),
+      `{"type":"message","id":"m1","message":{"role":"user","content":"${longText}"}}\n`,
+      "utf8",
+    );
+    const sessions = listWorkspaceSessions(dir, "C:/Users/gg/ws3");
+    assert.equal(sessions[0]?.name.length, 41); // 40 + …
+  });
 });

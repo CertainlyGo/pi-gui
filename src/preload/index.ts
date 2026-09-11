@@ -24,7 +24,8 @@ const api: PiGuiApi = {
   setThinkingLevel: (workspace, level) =>
     ipcRenderer.invoke("engine:set-thinking", workspace, level),
   listCredentials: () => ipcRenderer.invoke("auth:list"),
-  setCredential: (provider, key) => ipcRenderer.invoke("auth:set", provider, key),
+  setApiCredential: (format, baseUrl, key) =>
+    ipcRenderer.invoke("auth:set-api", format, baseUrl, key),
   removeCredential: (provider) => ipcRenderer.invoke("auth:remove", provider),
   trustState: (workspace) => ipcRenderer.invoke("trust:state", workspace),
   decideTrust: (workspace, decision) => ipcRenderer.invoke("trust:decide", workspace, decision),
@@ -37,6 +38,8 @@ const api: PiGuiApi = {
   forkFromMessage: (workspace, entryId) =>
     ipcRenderer.invoke("engine:fork", workspace, entryId),
   getMessages: (workspace) => ipcRenderer.invoke("engine:get-messages", workspace),
+  setSessionName: (workspace, name) =>
+    ipcRenderer.invoke("engine:set-session-name", workspace, name),
   searchPackages: (query) => ipcRenderer.invoke("market:search", query),
   listPackages: () => ipcRenderer.invoke("market:list"),
   installPackage: (spec, scope, workspace) =>

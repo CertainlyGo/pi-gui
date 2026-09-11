@@ -9,6 +9,8 @@ import { createTrustStore, detectTrustResources } from "./trust.ts";
 import { deleteSessionFile, listWorkspaceSessions } from "./sessions.ts";
 import { OAUTH_PROVIDERS, handleAuthNotifyForBrowser, runOAuthLogin } from "./oauth.ts";
 import type { OAuthProvider } from "./oauth.ts";
+import { setProviderBaseUrl } from "./models-config.ts";
+import type { ApiFormat } from "./models-config.ts";
 import {
   installPiPackage,
   listInstalledPackages,
@@ -201,6 +203,7 @@ app.whenReady().then(() => {
 
   // ---- 凭据（账号页）----
   const authPath = join(homedir(), ".pi", "agent", "auth.json");
+  const modelsPath = join(homedir(), ".pi", "agent", "models.json");
 
   ipcMain.handle("auth:list", async (): Promise<CredentialInfo[]> => {
     const auth = await loadAuthFile(authPath);
@@ -212,22 +215,31 @@ app.whenReady().then(() => {
     }));
   });
 
-  ipcMain.handle("auth:set", async (_event, provider: string, key: string): Promise<AuthSetOutcome> => {
-    if (typeof provider !== "string" || provider.trim().length === 0) {
-      return { ok: false, error: "provider 不能为空" };
+  ipcMain.handle("auth:set-api", async (
+    _event,
+    format: ApiFormat,
+    baseUrl: string,
+    key: string,
+  ): Promise<AuthSetOutcome> => {
+    if (format !== "openai" && format !== "anthropic") {
+      return { ok: false, error: "格式只能是 openai 或 anthropic" };
+    }
+    if (typeof baseUrl !== "string" || baseUrl.trim().length === 0) {
+      return { ok: false, error: "API 网址不能为空" };
     }
     if (typeof key !== "string" || key.trim().length === 0) {
       return { ok: false, error: "密钥不能为空" };
     }
     try {
-      await saveCredential(authPath, provider.toLowerCase(), { type: "api_key", key: key.trim() });
+      await saveCredential(authPath, format, { type: "api_key", key: key.trim() });
+      await setProviderBaseUrl(modelsPath, format, baseUrl.trim());
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
     const check = await checkProviderAuth({
       nodeExecPath: process.execPath,
       cliPath: piCliPath,
-      provider: provider.toLowerCase(),
+      provider: format,
     });
     return { ok: true, check };
   });
@@ -293,6 +305,12 @@ app.whenReady().then(() => {
     const instance = engines.get(workspace);
     if (instance.status !== "ready") return [];
     return instance.getMessages();
+  });
+
+  ipcMain.handle("engine:set-session-name", async (_event, workspace: string, name: string) => {
+    const instance = engines.get(workspace);
+    if (instance.status !== "ready") return { ok: false };
+    return instance.setSessionName(name);
   });
 
   // ---- 插件市场 ----

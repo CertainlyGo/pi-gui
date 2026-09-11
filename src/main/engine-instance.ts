@@ -309,6 +309,12 @@ export class EngineInstance {
     return Array.isArray(messages) ? (messages as readonly Record<string, unknown>[]) : [];
   }
 
+  /** 给当前会话设置展示名。 */
+  async setSessionName(name: string): Promise<{ ok: boolean }> {
+    const response = await this.peer.request({ type: "set_session_name", name });
+    return { ok: (response as Record<string, unknown>)["success"] !== false };
+  }
+
   #handleStdout(chunk: string): void {
     const outcome = this.#decoder.push(chunk);
     for (const error of outcome.errors) this.#options.onWarning?.(error);

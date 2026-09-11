@@ -174,6 +174,7 @@ export interface PiGuiApi {
   newSession(workspace: string): Promise<{ ok: boolean; cancelled: boolean; error?: string }>;
   forkFromMessage(workspace: string, entryId: string): Promise<{ ok: boolean; cancelled: boolean; error?: string }>;
   getMessages(workspace: string): Promise<readonly Record<string, unknown>[]>;
+  setSessionName(workspace: string, name: string): Promise<{ ok: boolean }>;
 
   searchPackages(query: string): Promise<MarketPackage[]>;
   listPackages(): Promise<string[]>;
@@ -195,6 +196,7 @@ export interface PiGuiApi {
   onOAuthNotify(listener: (message: OAuthNotifyMessage) => void): () => void;
 
   listCredentials(): Promise<CredentialInfo[]>;
-  setCredential(provider: string, key: string): Promise<AuthSetOutcome>;
+  /** API Key 登录：选格式（openai/anthropic 兼容）+ 网址 + key。 */
+  setApiCredential(format: "openai" | "anthropic", baseUrl: string, key: string): Promise<AuthSetOutcome>;
   removeCredential(provider: string): Promise<boolean>;
 }
