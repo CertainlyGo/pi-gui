@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
 /**
@@ -21,6 +21,26 @@ export interface SessionSummary {
   readonly name: string;
   readonly path: string;
   readonly updatedAt: number;
+}
+
+/** 删除一个 session 文件。只允许删除当前工作区 sessions 目录下的文件，防路径逃逸。 */
+export function deleteSessionFile(
+  agentDir: string,
+  workspace: string,
+  sessionPath: string,
+): { ok: boolean; error?: string } {
+  const sessionsRoot = resolve(workspaceSessionDir(agentDir, workspace));
+  const target = resolve(sessionPath);
+  const separator = process.platform === "win32" ? "\\" : "/";
+  if (!target.startsWith(`${sessionsRoot}${separator}`)) {
+    return { ok: false, error: "只能删除当前工作区的会话文件" };
+  }
+  try {
+    rmSync(target, { force: true });
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 export function listWorkspaceSessions(agentDir: string, workspace: string): SessionSummary[] {

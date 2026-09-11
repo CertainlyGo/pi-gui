@@ -10,6 +10,7 @@ import type {
 } from "../../shared/ipc-contract.ts";
 import { parseUnifiedDiff } from "./diff.ts";
 import type { ParsedDiff } from "./diff.ts";
+import { mapMessagesToItems } from "./history.ts";
 
 type ItemKind = "user" | "assistant" | "tool" | "bash" | "system";
 
@@ -25,6 +26,8 @@ interface Item {
   output?: string;
   /** edit 工具返回的 unified diff 文本。 */
   diff?: string;
+  /** 用户消息的条目 id（fork 用）。 */
+  entryId?: string;
 }
 
 interface StatsState {
@@ -158,6 +161,12 @@ export function App(): JSX.Element {
   const [trust, setTrust] = useState<{ resources: readonly string[]; decided: boolean } | null>(null);
   const [sessions, setSessions] = useState<readonly SessionSummary[]>([]);
   const [dialog, setDialog] = useState<UiDialog | null>(null);
+  const [currentSession, setCurrentSession] = useState<{
+    id: string;
+    name: string;
+    file: string | null;
+  } | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
 
   const itemsRef = useRef<Item[]>([]);
   const itemIdsRef = useRef<string[]>([]);
@@ -239,6 +248,45 @@ export function App(): JSX.Element {
     void window.piGui.listSessions(path).then(setSessions);
   }
 
+  async function syncCurrentSession(path: string): Promise<void> {
+    try {
+      const state = await window.piGui.getState(path);
+      const data = asRecord(state["data"]);
+      const file = str(data["sessionFile"]);
+      const id = str(data["sessionId"]) ?? "";
+      const name = str(data["sessionName"]);
+      setCurrentSession({
+        id,
+        name: name ?? (id.length === 0 ? "新会话" : id.slice(0, 8)),
+        file: file ?? null,
+      });
+    } catch {
+      // 引擎刚启动可能还没有会话元数据，保持现状即可。
+    }
+  }
+
+  /** 恢复最近会话并载入它的历史消息（重开窗口后消息仍在）。 */
+  async function loadHistory(path: string): Promise<void> {
+    const history = await window.piGui.listSessions(path);
+    if (history.length > 0) {
+      const resumed = await window.piGui.switchSession(path, history[0]!.path);
+      if (resumed.ok && !resumed.cancelled) {
+        pushItem({
+          kind: "system",
+          id: `resume-${Date.now()}`,
+          text: `已恢复最近会话：${history[0]!.name}`,
+        });
+      }
+    }
+    const messages = await window.piGui.getMessages(path);
+    itemsRef.current = mapMessagesToItems(messages);
+    itemIdsRef.current = itemsRef.current.map((item) => item.id);
+    currentAssistantId.current = null;
+    await syncCurrentSession(path);
+    streamEndRef.current?.scrollIntoView({ block: "end" });
+    rerender();
+  }
+
   async function startEngine(path: string): Promise<void> {
     try {
       const snapshot = await window.piGui.startEngine(path);
@@ -249,6 +297,7 @@ export function App(): JSX.Element {
         text: `引擎已启动（pid ${snapshot.pid ?? "?"}）`,
       });
       refreshSessions(path);
+      await loadHistory(path);
     } catch (error) {
       setStartError(error instanceof Error ? error.message : String(error));
     }
@@ -281,15 +330,89 @@ export function App(): JSX.Element {
       return;
     }
     const result = await window.piGui.switchSession(workspace, summary.path);
+    if (!result.ok) {
+      pushItem({ kind: "system", id: `switch-${Date.now()}`, text: "会话切换失败" });
+      return;
+    }
     pushItem({
       kind: "system",
       id: `switch-${Date.now()}`,
-      text: result.ok
-        ? result.cancelled
-          ? "会话切换被扩展取消"
-          : `已切换到会话：${summary.name}`
-        : "会话切换失败",
+      text: result.cancelled ? "会话切换被扩展取消" : `已切换到会话：${summary.name}`,
     });
+    if (result.cancelled) return;
+    const messages = await window.piGui.getMessages(workspace);
+    itemsRef.current = mapMessagesToItems(messages);
+    itemIdsRef.current = itemsRef.current.map((item) => item.id);
+    currentAssistantId.current = null;
+    await syncCurrentSession(workspace);
+    rerender();
+  }
+
+  async function createNewSession(): Promise<void> {
+    if (workspace === null) return;
+    if (status !== "ready") {
+      pushItem({
+        kind: "system",
+        id: `new-${Date.now()}`,
+        text: "引擎未就绪，无法新建会话（先选择工作区）",
+      });
+      return;
+    }
+    const result = await window.piGui.newSession(workspace);
+    if (!result.ok) {
+      pushItem({ kind: "system", id: `new-${Date.now()}`, text: `新建会话失败：${result.error ?? "?"}` });
+      return;
+    }
+    if (result.cancelled) {
+      pushItem({ kind: "system", id: `new-${Date.now()}`, text: "新建会话被扩展取消" });
+      return;
+    }
+    itemsRef.current = [];
+    itemIdsRef.current = [];
+    currentAssistantId.current = null;
+    await syncCurrentSession(workspace);
+    refreshSessions(workspace);
+    pushItem({ kind: "system", id: `fresh-${Date.now()}`, text: "已新建会话" });
+    rerender();
+  }
+
+  async function deleteSessionFlow(summary: SessionSummary): Promise<void> {
+    if (workspace === null) return;
+    if (pendingDelete !== summary.path) {
+      setPendingDelete(summary.path);
+      return;
+    }
+    setPendingDelete(null);
+    const result = await window.piGui.deleteSession(workspace, summary.path);
+    pushItem({
+      kind: "system",
+      id: `del-${Date.now()}`,
+      text: result.ok
+        ? `已删除会话：${summary.name}`
+        : `删除失败：${result.error ?? "?"}`,
+    });
+    refreshSessions(workspace);
+  }
+
+  async function forkFrom(entryId: string): Promise<void> {
+    if (workspace === null) return;
+    const result = await window.piGui.forkFromMessage(workspace, entryId);
+    if (!result.ok) {
+      pushItem({ kind: "system", id: `fork-${Date.now()}`, text: `分叉失败：${result.error ?? "?"}` });
+      return;
+    }
+    if (result.cancelled) {
+      pushItem({ kind: "system", id: `fork-${Date.now()}`, text: "分叉被扩展取消" });
+      return;
+    }
+    const messages = await window.piGui.getMessages(workspace);
+    itemsRef.current = mapMessagesToItems(messages);
+    itemIdsRef.current = itemsRef.current.map((item) => item.id);
+    currentAssistantId.current = null;
+    await syncCurrentSession(workspace);
+    refreshSessions(workspace);
+    pushItem({ kind: "system", id: `forked-${Date.now()}`, text: "已进入子会话（从此条消息分叉）" });
+    rerender();
   }
 
   async function send(): Promise<void> {
@@ -558,29 +681,68 @@ export function App(): JSX.Element {
       {view === "chat" ? (
         <>
           <div className="chat-body">
-            <aside className="rail">
-              <div className="grouplabel">会话（此工作区）</div>
+            <aside
+              className="rail"
+              onClick={() => setPendingDelete(null)}
+            >
+              <button
+                className="newbtn"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void createNewSession();
+                }}
+                disabled={workspace === null}
+              >
+                ＋ 新建会话
+              </button>
               {workspace === null && <p className="rail-empty">选择工作区后显示会话列表。</p>}
-              {sessions.length === 0 && workspace !== null && (
-                <p className="rail-empty">还没有会话。</p>
-              )}
-              {groupSessions(sessions).map((group) => (
-                <div key={group.label}>
-                  <div className="grouplabel">{group.label}</div>
-                  {group.items.map((summary) => (
-                    <button
-                      key={summary.path}
-                      type="button"
-                      className="sess"
-                      onClick={() => void switchToSession(summary)}
-                      title={`恢复到 ${summary.path}`}
-                    >
-                      <span className="sess-name">{summary.name}</span>
-                      <span className="sess-time">{formatTime(summary.updatedAt)}</span>
-                    </button>
-                  ))}
+              {currentSession !== null && (
+                <div className="sess current" title="当前会话">
+                  <span className="sess-name">{currentSession.name}</span>
+                  <span className="sess-badge">当前</span>
                 </div>
-              ))}
+              )}
+              {groupSessions(sessions)
+                .filter((group) =>
+                  group.items.some(
+                    (item) =>
+                      currentSession === null ||
+                      item.path !== currentSession.file,
+                  ),
+                )
+                .map((group) => (
+                  <div key={group.label}>
+                    <div className="grouplabel">{group.label}</div>
+                    {group.items.map((summary) => {
+                      const isCurrent = currentSession !== null && summary.path === currentSession.file;
+                      if (isCurrent) return null;
+                      return (
+                        <div key={summary.path} className="sess-row">
+                          <button
+                            type="button"
+                            className="sess"
+                            onClick={() => void switchToSession(summary)}
+                            title={`恢复到 ${summary.path}`}
+                          >
+                            <span className="sess-name">{summary.name}</span>
+                            <span className="sess-time">{formatTime(summary.updatedAt)}</span>
+                          </button>
+                          <button
+                            type="button"
+                            className={`sess-del ${pendingDelete === summary.path ? "arm" : ""}`}
+                            title={pendingDelete === summary.path ? "再点一次确认删除" : "删除此会话"}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void deleteSessionFlow(summary);
+                            }}
+                          >
+                            {pendingDelete === summary.path ? "确认" : "🗑"}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
             </aside>
             <main className="stream">
               {trust !== null && !trust.decided && trust.resources.length > 0 && (
@@ -623,13 +785,18 @@ export function App(): JSX.Element {
               {trust !== null && !trust.decided && (
                 <p className="empty trust-pending">先决定是否信任这个目录，引擎才会启动。</p>
               )}
-              <div className="wrap">
+              <div className="wrap" key={currentSession?.id ?? "fresh"}>
                 {items.map((item) => (
                   <ItemView
                     key={item.id}
                     item={item}
                     expanded={expandedIds.has(item.id)}
                     onToggle={() => toggleExpanded(item.id)}
+                    onFork={
+                      item.kind === "user" && item.entryId !== undefined && workspace !== null
+                        ? () => void forkFrom(item.entryId!)
+                        : undefined
+                    }
                   />
                 ))}
               </div>
@@ -1513,16 +1680,23 @@ function ItemView({
   item,
   expanded,
   onToggle,
+  onFork,
 }: {
   item: Item;
   expanded: boolean;
   onToggle: () => void;
+  onFork?: (() => void) | undefined;
 }): JSX.Element {
   if (item.kind === "user") {
     return (
       <div className="me">
         <div className="who">你</div>
         <div className="me-text">{item.text}</div>
+        {onFork !== undefined && (
+          <button type="button" className="fork-btn" onClick={onFork}>
+            ⟳ 从这里分支（进入子会话）
+          </button>
+        )}
       </div>
     );
   }

@@ -31,6 +31,12 @@ const api: PiGuiApi = {
   listSessions: (workspace) => ipcRenderer.invoke("sessions:list", workspace),
   switchSession: (workspace, sessionPath) =>
     ipcRenderer.invoke("engine:switch-session", workspace, sessionPath),
+  deleteSession: (workspace, sessionPath) =>
+    ipcRenderer.invoke("sessions:delete", workspace, sessionPath),
+  newSession: (workspace) => ipcRenderer.invoke("engine:new-session", workspace),
+  forkFromMessage: (workspace, entryId) =>
+    ipcRenderer.invoke("engine:fork", workspace, entryId),
+  getMessages: (workspace) => ipcRenderer.invoke("engine:get-messages", workspace),
   searchPackages: (query) => ipcRenderer.invoke("market:search", query),
   listPackages: () => ipcRenderer.invoke("market:list"),
   installPackage: (spec, scope, workspace) =>

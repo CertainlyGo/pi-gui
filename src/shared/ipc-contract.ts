@@ -170,6 +170,10 @@ export interface PiGuiApi {
 
   listSessions(workspace: string): Promise<SessionSummary[]>;
   switchSession(workspace: string, sessionPath: string): Promise<{ ok: boolean; cancelled: boolean }>;
+  deleteSession(workspace: string, sessionPath: string): Promise<{ ok: boolean; error?: string }>;
+  newSession(workspace: string): Promise<{ ok: boolean; cancelled: boolean; error?: string }>;
+  forkFromMessage(workspace: string, entryId: string): Promise<{ ok: boolean; cancelled: boolean; error?: string }>;
+  getMessages(workspace: string): Promise<readonly Record<string, unknown>[]>;
 
   searchPackages(query: string): Promise<MarketPackage[]>;
   listPackages(): Promise<string[]>;

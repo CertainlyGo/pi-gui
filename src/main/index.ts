@@ -6,7 +6,7 @@ import { createEngineRegistry } from "./engine-registry.ts";
 import { spawnPiEngine } from "./pi-process.ts";
 import { checkProviderAuth, loadAuthFile, removeCredential, saveCredential } from "./credentials.ts";
 import { createTrustStore, detectTrustResources } from "./trust.ts";
-import { listWorkspaceSessions } from "./sessions.ts";
+import { deleteSessionFile, listWorkspaceSessions } from "./sessions.ts";
 import { OAUTH_PROVIDERS, handleAuthNotifyForBrowser, runOAuthLogin } from "./oauth.ts";
 import type { OAuthProvider } from "./oauth.ts";
 import {
@@ -269,6 +269,30 @@ app.whenReady().then(() => {
     if (instance.status !== "ready") return { ok: false, cancelled: false, error: "引擎未就绪" };
     const { cancelled } = await instance.switchSession(sessionPath);
     return { ok: true, cancelled };
+  });
+
+  ipcMain.handle("sessions:delete", (_event, workspace: string, sessionPath: string) => {
+    return deleteSessionFile(agentDir, workspace, sessionPath);
+  });
+
+  ipcMain.handle("engine:new-session", async (_event, workspace: string) => {
+    const instance = engines.get(workspace);
+    if (instance.status !== "ready") return { ok: false, cancelled: false, error: "引擎未就绪" };
+    const { cancelled } = await instance.newSession();
+    return { ok: true, cancelled };
+  });
+
+  ipcMain.handle("engine:fork", async (_event, workspace: string, entryId: string) => {
+    const instance = engines.get(workspace);
+    if (instance.status !== "ready") return { ok: false, cancelled: false, error: "引擎未就绪" };
+    const { cancelled } = await instance.fork(entryId);
+    return { ok: true, cancelled };
+  });
+
+  ipcMain.handle("engine:get-messages", async (_event, workspace: string) => {
+    const instance = engines.get(workspace);
+    if (instance.status !== "ready") return [];
+    return instance.getMessages();
   });
 
   // ---- 插件市场 ----

@@ -274,6 +274,41 @@ export class EngineInstance {
     this.peer.respondToExtensionUi({ type: "extension_ui_response", id, ...response });
   }
 
+  /** 新建一个干净会话（可能被扩展的 before_switch 处理器取消）。 */
+  async newSession(): Promise<{ cancelled: boolean }> {
+    const response = await this.peer.request({ type: "new_session" });
+    const data = (response as Record<string, unknown>)["data"];
+    return {
+      cancelled:
+        data !== null && typeof data === "object"
+          ? (data as Record<string, unknown>)["cancelled"] === true
+          : false,
+    };
+  }
+
+  /** 从某条用户消息分叉出子会话（引擎会切到新分支）。 */
+  async fork(entryId: string): Promise<{ cancelled: boolean }> {
+    const response = await this.peer.request({ type: "fork", entryId });
+    const data = (response as Record<string, unknown>)["data"];
+    return {
+      cancelled:
+        data !== null && typeof data === "object"
+          ? (data as Record<string, unknown>)["cancelled"] === true
+          : false,
+    };
+  }
+
+  /** 当前会话的全部消息（AgentMessage 原始对象）。 */
+  async getMessages(): Promise<readonly Record<string, unknown>[]> {
+    const response = await this.peer.request({ type: "get_messages" });
+    const data = (response as Record<string, unknown>)["data"];
+    const messages =
+      data !== null && typeof data === "object"
+        ? (data as Record<string, unknown>)["messages"]
+        : undefined;
+    return Array.isArray(messages) ? (messages as readonly Record<string, unknown>[]) : [];
+  }
+
   #handleStdout(chunk: string): void {
     const outcome = this.#decoder.push(chunk);
     for (const error of outcome.errors) this.#options.onWarning?.(error);
