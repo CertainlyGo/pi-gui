@@ -1,6 +1,6 @@
 {
   "name": "pi-gui",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "pi 的图形前端：给不愿意使用终端的用户一个窗口来驱动本地 coding agent",
@@ -14,13 +14,12 @@
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit",
     "test": "node --test test/*.test.ts",
-    "smoke:engine": "node scripts/engine-smoke.ts"
+    "smoke:engine": "node scripts/engine-smoke.ts",
+    "dist": "npm run build && electron-builder --win"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "0.85.1",
-    "@earendil-works/pi-coding-agent": "0.85.1",
-    "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "@earendil-works/pi-coding-agent": "0.85.1"
   },
   "devDependencies": {
     "@types/node": "22.20.2",
@@ -28,8 +27,40 @@
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "5.2.0",
     "electron": "44.3.0",
+    "electron-builder": "26.15.3",
     "electron-vite": "5.0.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
     "typescript": "7.0.2",
     "vite": "7.3.6"
+  },
+  "build": {
+    "appId": "dev.piguicode.pigui",
+    "productName": "pi-gui",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/@earendil-works/pi-coding-agent/**",
+      "node_modules/@earendil-works/pi-ai/**",
+      "node_modules/esbuild/**",
+      "node_modules/@esbuild/**"
+    ],
+    "npmRebuild": false,
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "pi-gui-${version}-setup.${ext}"
+    },
+    "electronDist": "node_modules/electron/dist"
   }
 }

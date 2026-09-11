@@ -47,6 +47,12 @@ npm run typecheck    # tsc --noEmit（strict + erasable TS）
 npm test             # node:test（63 个用例，核心层零依赖可直跑）
 npm run smoke:engine # 用真实 pi 走 启动→get_state→停止 往返
 npm run build        # electron-vite 三端构建，产物在 out/
+
+# 打包发行（Windows NSIS 安装包 → release/pi-gui-<version>-setup.exe）
+# 本机需要两个环境变量（github 被屏蔽 + SSL 拦截，见 docs/development.md「打包发行」）：
+#   $env:ELECTRON_BUILDER_BINARIES_MIRROR="https://npmmirror.com/mirrors/electron-builder-binaries/"
+#   $env:NODE_OPTIONS="--use-system-ca"
+npm run dist
 ```
 
 从零到跑通：`npm run dev` → 右上角「账号」配置凭据 → 「选择工作区」→ 发消息。
@@ -55,4 +61,4 @@ npm run build        # electron-vite 三端构建，产物在 out/
 
 ## 状态
 
-活跃开发中。后续方向：打包分发（electron-builder）、恢复会话选择器、i18n 词表抽离。
+活跃开发中。已产出 Windows 安装包（`release/pi-gui-0.1.0-setup.exe`，NSIS，选目录安装）；打包绕过的坑（asar 解包、目录 rename EPERM、证书/镜像）见 [`docs/development.md`](docs/development.md)。后续方向：恢复会话选择器、i18n 词表抽离、代码签名。

@@ -37,3 +37,22 @@ npm run smoke:engine   # 用真实 pi 走 启动→探测→get_state→停止
 - CSP 在开发模式不收紧（vite HMR 需要内联脚本），生产构建时再锁，见 index.html 注释。
 - React/TS 版本注意：本机 npm 的 `typescript` 是 7.x（原生编译器），`@types/node` 配 24.x，`erasableSyntaxOnly` 约束仍生效。
 - **OAuth 登录复用 pi 的内部实现**：`@earendil-works/pi-ai` 的公开导出只有 OAuth 类型，PKCE 流程实现（`dist/auth/oauth/load.js` 及各 provider 模块）通过**绝对文件路径深 import** 加载（规避 exports map）。路径随版本钉死（ADR-0005），升级 pi 版本时必须回归验证 `loadOAuthAuth`。
+
+## 打包发行（electron-builder）
+
+```bash
+# 环境变量（本机 github 直连被屏蔽 + SSL 拦截代理）：
+$env:ELECTRON_BUILDER_BINARIES_MIRROR="https://npmmirror.com/mirrors/electron-builder-binaries/"
+$env:NODE_OPTIONS="--use-system-ca"   # Node 的 TLS 不信系统证书会握手失败
+npm run dist                            # = npm run build && electron-builder --win
+# 产物：release/pi-gui-<version>-setup.exe（NSIS，可选安装目录）
+```
+
+踩过的坑（全部有解）：
+
+- **app-builder-lib 解压 electron 后 rename 必失败（EPERM）**：`fs.rename('win-unpacked.tmp','win-unpacked')` 稳定报 EPERM（重试无用、换盘无效）。绕过：`build.electronDist: "node_modules/electron/dist"`，让 electron-builder 直接拷我们 npm 装的发行版，跳过下载+7z 解压+rename 环节。
+- **asar 里跑不起 vendored pi**：pi 的 `getPackageDir()` 会向上找 package.json 当包根；只要服务者目录在 asar 里找不到 package.json，就一路穿到我们项目根（还把 `src/` 当 pi 的源码树）。修：`asarUnpack` 必须**整目录解包** `node_modules/@earendil-works/pi-coding-agent/**` 与 `pi-ai/**`（连同 package.json），`@esbuild/**` 同理（原生二进制不能留在 asar）。已解包的 cli.js 用纯 node 验证过 `get_state` 往返。
+- 构建收尾偶发 `UNKNOWN: unknown error, open pi-gui.exe`：重试即可（三次内必成）。
+- 签名：无证书，sign 步骤空跑。
+
+打包后自检：`release/win-unpacked/pi-gui.exe` 能稳定存活；引擎链路用 `release/win-unpacked/resources/app.asar.unpacked/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js` 跑 `get_state` 验证（注意 cwd 要用干净的临时目录，别在含 `src/` 的目录里跑）。
