@@ -95,6 +95,33 @@ export interface CliOutcome {
   readonly error?: string;
 }
 
+/** OAuth 登录时，主进程会弹给渲染层的提示请求。 */
+export interface OAuthPromptMessage {
+  readonly id: string;
+  readonly type: string;
+  readonly message: string;
+  readonly placeholder?: string;
+  readonly options?: readonly { id: string; label: string; description?: string }[];
+}
+
+/** OAuth 登录过程中的进度事件（含授权链接 / 设备码）。 */
+export interface OAuthNotifyMessage {
+  readonly type: string;
+  readonly message?: string;
+  readonly url?: string;
+  readonly instructions?: string;
+  readonly userCode?: string;
+  readonly verificationUri?: string;
+  readonly links?: readonly { url: string; label?: string }[];
+}
+
+export interface OAuthLoginOutcome {
+  readonly ok: boolean;
+  readonly provider: string;
+  readonly error?: string;
+  readonly check?: { status: string; reason?: string; message?: string };
+}
+
 /** main → renderer 推送的引擎事件载荷。 */
 export interface EngineEventPayload<M = unknown> {
   readonly workspace: string;
@@ -156,6 +183,12 @@ export interface PiGuiApi {
     requestId: string,
     response: Record<string, unknown>,
   ): Promise<{ ok: boolean }>;
+
+  oauthLogin(provider: string): Promise<OAuthLoginOutcome>;
+  oauthCancel(): void;
+  respondOAuthPrompt(id: string, value: string | null): void;
+  onOAuthPrompt(listener: (message: OAuthPromptMessage) => void): () => void;
+  onOAuthNotify(listener: (message: OAuthNotifyMessage) => void): () => void;
 
   listCredentials(): Promise<CredentialInfo[]>;
   setCredential(provider: string, key: string): Promise<AuthSetOutcome>;

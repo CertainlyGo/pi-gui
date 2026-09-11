@@ -13,11 +13,9 @@ import { dirname } from "node:path";
 
 export const AUTH_FILE_MODE = 0o600;
 
-export interface Credential {
-  readonly type: "api_key" | "bearer_token";
-  readonly key: string;
-  readonly [extra: string]: unknown;
-}
+export type Credential =
+  | { type: "api_key" | "bearer_token"; key: string; [extra: string]: unknown }
+  | { type: "oauth"; access: string; refresh: string; expires: number; [extra: string]: unknown };
 
 export type AuthFile = Record<string, Credential>;
 
@@ -54,7 +52,20 @@ export async function loadAuthFile(path: string): Promise<AuthFile> {
       throw new AuthFileError(`auth.json 里 ${provider} 的凭据不是对象`);
     }
     const entry = value as Partial<Credential>;
-    if (entry["type"] !== "api_key" && entry["type"] !== "bearer_token") {
+    const type = entry["type"];
+    if (type === "oauth") {
+      const oauth = value as Record<string, unknown>;
+      if (
+        typeof oauth["access"] !== "string" ||
+        typeof oauth["refresh"] !== "string" ||
+        typeof oauth["expires"] !== "number"
+      ) {
+        throw new AuthFileError(`auth.json 里 ${provider} 的 oauth 凭据缺 access/refresh/expires`);
+      }
+      result[provider] = value as Credential;
+      continue;
+    }
+    if (type !== "api_key" && type !== "bearer_token") {
       throw new AuthFileError(`auth.json 里 ${provider} 的 type 无效`);
     }
     if (typeof entry["key"] !== "string") {

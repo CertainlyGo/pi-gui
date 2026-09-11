@@ -41,6 +41,15 @@ const api: PiGuiApi = {
     ipcRenderer.invoke("market:remove", spec, scope, workspace),
   respondUi: (workspace, requestId, response) =>
     ipcRenderer.invoke("engine:respond-ui", workspace, requestId, response),
+  oauthLogin: (provider) => ipcRenderer.invoke("auth:oauth-login", provider),
+  oauthCancel: () => {
+    void ipcRenderer.invoke("auth:oauth-cancel");
+  },
+  respondOAuthPrompt: (id, value) => {
+    void ipcRenderer.invoke("auth:prompt-response", id, value);
+  },
+  onOAuthPrompt: (listener) => subscribe("auth:prompt", listener),
+  onOAuthNotify: (listener) => subscribe("auth:notify", listener),
   onEngineEvent: (listener) => subscribe("engine:event", listener),
   onStatus: (listener) => subscribe("engine:status", listener),
   onWarning: (listener) => subscribe("engine:warning", listener),

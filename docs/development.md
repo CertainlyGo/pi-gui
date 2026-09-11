@@ -36,3 +36,4 @@ npm run smoke:engine   # 用真实 pi 走 启动→探测→get_state→停止
 - dev 三连：`npx electron-vite dev`（渲染层 HMR + 重启 main 自动重载）；验证 boot 用 PowerShell `Start-Process` + `taskkill /T /F` 收进程树，别用 `/IM electron.exe`（会误杀 VS Code）。
 - CSP 在开发模式不收紧（vite HMR 需要内联脚本），生产构建时再锁，见 index.html 注释。
 - React/TS 版本注意：本机 npm 的 `typescript` 是 7.x（原生编译器），`@types/node` 配 24.x，`erasableSyntaxOnly` 约束仍生效。
+- **OAuth 登录复用 pi 的内部实现**：`@earendil-works/pi-ai` 的公开导出只有 OAuth 类型，PKCE 流程实现（`dist/auth/oauth/load.js` 及各 provider 模块）通过**绝对文件路径深 import** 加载（规避 exports map）。路径随版本钉死（ADR-0005），升级 pi 版本时必须回归验证 `loadOAuthAuth`。

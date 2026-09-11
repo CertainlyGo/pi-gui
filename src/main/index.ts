@@ -7,6 +7,8 @@ import { spawnPiEngine } from "./pi-process.ts";
 import { checkProviderAuth, loadAuthFile, removeCredential, saveCredential } from "./credentials.ts";
 import { createTrustStore, detectTrustResources } from "./trust.ts";
 import { listWorkspaceSessions } from "./sessions.ts";
+import { OAUTH_PROVIDERS, handleAuthNotifyForBrowser, runOAuthLogin } from "./oauth.ts";
+import type { OAuthProvider } from "./oauth.ts";
 import {
   installPiPackage,
   listInstalledPackages,
@@ -16,7 +18,8 @@ import {
 } from "./marketplace.ts";
 import type { EngineInstance } from "./engine-instance.ts";
 import type { ExtensionUiRequest } from "../shared/rpc-peer.ts";
-import type { AuthSetOutcome, CredentialInfo } from "../shared/ipc-contract.ts";
+import type { Credential } from "./credentials.ts";
+import type { AuthSetOutcome, CredentialInfo, OAuthPromptMessage } from "../shared/ipc-contract.ts";
 
 /** ADR-0005：pi 是 vendored 依赖，cli.js 从我们自己的 node_modules 里取。
  * 用 import.meta.resolve（import 条件）而不是 require.resolve（require 条件），
@@ -49,6 +52,20 @@ function snapshot(instance: EngineInstance) {
 function maskKey(key: string): string {
   if (key.length <= 8) return "••••";
   return `••••${key.slice(-4)}`;
+}
+
+function isOAuthProvider(value: unknown): value is OAuthProvider {
+  return (
+    typeof value === "string" &&
+    (OAUTH_PROVIDERS as readonly { id: OAuthProvider; label: string }[]).some(
+      (entry) => entry.id === value,
+    )
+  );
+}
+
+/** auth.json 的 provider 键：codex 类账号在 ai 里的命名是 openai-codex。 */
+function providerIdToCredentialKey(provider: OAuthProvider): string {
+  return provider;
 }
 
 function readObj(value: unknown): Record<string, unknown> {
@@ -190,7 +207,8 @@ app.whenReady().then(() => {
     return Object.entries(auth).map(([provider, credential]) => ({
       provider,
       type: credential.type,
-      keyMasked: maskKey(credential.key),
+      keyMasked:
+        credential.type === "oauth" ? "OAuth 令牌" : maskKey(credential.key),
     }));
   });
 
@@ -284,6 +302,89 @@ app.whenReady().then(() => {
   ipcMain.handle("engine:respond-ui", (_event, workspace: string, requestId: string, response: Record<string, unknown>) => {
     engines.get(workspace).respondExtensionUi(requestId, response);
     return { ok: true };
+  });
+
+  // ---- OAuth 订阅登录 ----
+  const oauthPendingPrompts = new Map<
+    string,
+    { resolve: (value: string) => void; reject: (error: Error) => void }
+  >();
+  let oauthPromptSeq = 0;
+  let oauthController: AbortController | undefined;
+
+  function broadcastPrompt(message: OAuthPromptMessage): void {
+    broadcast("auth:prompt", message);
+  }
+
+  ipcMain.handle("auth:oauth-login", async (_event, provider: string) => {
+    if (!isOAuthProvider(provider)) {
+      return { ok: false, provider, error: `未知的登录提供商：${provider}` };
+    }
+    oauthController?.abort();
+    oauthController = new AbortController();
+    const signal = oauthController.signal;
+    try {
+      const credential = await runOAuthLogin(
+        provider,
+        {
+          onPrompt: (prompt) =>
+            new Promise<string>((resolve, reject) => {
+              const id = `p-${++oauthPromptSeq}`;
+              oauthPendingPrompts.set(id, { resolve, reject });
+              broadcastPrompt({
+                id,
+                type: prompt.type,
+                message: prompt.message,
+                ...("placeholder" in prompt && typeof prompt["placeholder"] === "string"
+                  ? { placeholder: prompt["placeholder"] }
+                  : {}),
+                ...("options" in prompt ? { options: prompt.options } : {}),
+              });
+            }),
+          onNotify: (event) => {
+            const opened = handleAuthNotifyForBrowser(event);
+            broadcast("auth:notify", {
+              type: event.type,
+              ...("message" in event && typeof event.message === "string" ? { message: event.message } : {}),
+              ...("url" in event && typeof event.url === "string" ? { url: event.url } : {}),
+              ...("instructions" in event && typeof event.instructions === "string"
+                ? { instructions: event.instructions }
+                : {}),
+              ...("userCode" in event && typeof event.userCode === "string" ? { userCode: event.userCode } : {}),
+              ...("verificationUri" in event && typeof event.verificationUri === "string"
+                ? { verificationUri: event.verificationUri }
+                : {}),
+              ...(opened ? { message: "已在浏览器中打开授权页" } : {}),
+            });
+          },
+        },
+        signal,
+      );
+      await saveCredential(authPath, providerIdToCredentialKey(provider), credential as unknown as Credential);
+      const check = await checkProviderAuth({
+        nodeExecPath: process.execPath,
+        cliPath: piCliPath,
+        provider: providerIdToCredentialKey(provider),
+      });
+      return { ok: true, provider, check };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { ok: false, provider, error: message };
+    } finally {
+      oauthController = undefined;
+    }
+  });
+
+  ipcMain.handle("auth:prompt-response", (_event, id: string, value: string | null) => {
+    const pending = oauthPendingPrompts.get(id);
+    oauthPendingPrompts.delete(id);
+    if (pending === undefined) return;
+    if (value === null) pending.reject(new Error("登录被取消"));
+    else pending.resolve(value);
+  });
+
+  ipcMain.handle("auth:oauth-cancel", () => {
+    oauthController?.abort();
   });
 
   createWindow();

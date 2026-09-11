@@ -66,4 +66,28 @@ describe("credentials", () => {
     );
     await assert.rejects(loadAuthFile(path), AuthFileError);
   });
+
+  it("oauth 凭据：保存与读取 round-trip", async () => {
+    const path = join(dir, "oauth.json");
+    await saveCredential(path, "openai-codex", {
+      type: "oauth",
+      access: "tok-a",
+      refresh: "tok-r",
+      expires: 123_456,
+    });
+    const auth = await loadAuthFile(path);
+    const entry = auth["openai-codex"];
+    assert.equal(entry?.type, "oauth");
+    if (entry !== undefined && entry.type === "oauth") {
+      assert.equal(entry.access, "tok-a");
+      assert.equal(entry.refresh, "tok-r");
+      assert.equal(entry.expires, 123_456);
+    }
+  });
+
+  it("oauth 凭据缺 access/refresh/expires 被拒", async () => {
+    const path = join(dir, "oauth-bad.json");
+    await writeFile(path, '{"codex":{"type":"oauth","access":"a"}}', "utf8");
+    await assert.rejects(loadAuthFile(path), AuthFileError);
+  });
 });

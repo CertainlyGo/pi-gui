@@ -4,6 +4,7 @@ import type {
   EngineEventPayload,
   MarketPackage,
   ModelPickerData,
+  OAuthPromptMessage,
   SessionStatsData,
   SessionSummary,
 } from "../../shared/ipc-contract.ts";
@@ -66,6 +67,16 @@ const PROVIDER_DATALIST = [
   "qwen-token-plan",
   "radius",
 ] as const;
+
+const OAUTH_PROVIDERS: readonly { id: string; label: string }[] = [
+  { id: "openai-codex", label: "OpenAI Codex（ChatGPT 订阅）" },
+  { id: "anthropic", label: "Claude Pro / Max" },
+  { id: "github-copilot", label: "GitHub Copilot" },
+  { id: "xai", label: "xAI（Grok / X Premium）" },
+  { id: "openrouter", label: "OpenRouter" },
+  { id: "kimi-coding", label: "Kimi Coding" },
+  { id: "radius", label: "Radius（pi 网关）" },
+];
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object"
@@ -553,17 +564,22 @@ export function App(): JSX.Element {
               {sessions.length === 0 && workspace !== null && (
                 <p className="rail-empty">还没有会话。</p>
               )}
-              {sessions.map((summary) => (
-                <button
-                  key={summary.path}
-                  type="button"
-                  className="sess"
-                  onClick={() => void switchToSession(summary)}
-                  title={`恢复到 ${summary.path}`}
-                >
-                  <span className="sess-name">{summary.name}</span>
-                  <span className="sess-time">{formatTime(summary.updatedAt)}</span>
-                </button>
+              {groupSessions(sessions).map((group) => (
+                <div key={group.label}>
+                  <div className="grouplabel">{group.label}</div>
+                  {group.items.map((summary) => (
+                    <button
+                      key={summary.path}
+                      type="button"
+                      className="sess"
+                      onClick={() => void switchToSession(summary)}
+                      title={`恢复到 ${summary.path}`}
+                    >
+                      <span className="sess-name">{summary.name}</span>
+                      <span className="sess-time">{formatTime(summary.updatedAt)}</span>
+                    </button>
+                  ))}
+                </div>
               ))}
             </aside>
             <main className="stream">
@@ -685,6 +701,30 @@ function formatTime(millis: number): string {
   const sameDay = date.toDateString() === now.toDateString();
   const time = date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
   return sameDay ? time : `${date.getMonth() + 1}/${date.getDate()}`;
+}
+
+function groupSessions(
+  sessions: readonly SessionSummary[],
+): { label: string; items: readonly SessionSummary[] }[] {
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startOfYesterday = startOfToday - 86_400_000;
+  const groups: { label: string; items: SessionSummary[] }[] = [];
+  for (const summary of sessions) {
+    const label =
+      summary.updatedAt >= startOfToday
+        ? "今天"
+        : summary.updatedAt >= startOfYesterday
+          ? "昨天"
+          : "更早";
+    let group = groups.find((entry) => entry.label === label);
+    if (group === undefined) {
+      group = { label, items: [] };
+      groups.push(group);
+    }
+    group.items.push(summary);
+  }
+  return groups;
 }
 
 function toStats(data: SessionStatsData | null): StatsState {
@@ -934,6 +974,10 @@ function AccountButton({
   const [key, setKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [outcome, setOutcome] = useState<{ ok: boolean; text: string } | null>(null);
+  const [oauthBusy, setOauthBusy] = useState<string | null>(null);
+  const [oauthStatus, setOauthStatus] = useState<string | null>(null);
+  const [oauthPrompt, setOauthPrompt] = useState<OAuthPromptMessage | null>(null);
+  const [oauthText, setOauthText] = useState("");
 
   function refreshList(): void {
     void window.piGui.listCredentials().then(setProviders);
@@ -942,6 +986,30 @@ function AccountButton({
   useEffect(() => {
     if (open) refreshList();
   }, [open]);
+
+  useEffect(() => {
+    const offPrompt = window.piGui.onOAuthPrompt((message) => {
+      setOauthPrompt(message);
+      setOauthText("");
+    });
+    const offNotify = window.piGui.onOAuthNotify((message) => {
+      if (message.type === "progress") {
+        setOauthStatus(message.message ?? "授权中…");
+      } else if (message.type === "info") {
+        setOauthStatus(message.message ?? "等待授权…");
+      } else if (message.type === "auth_url") {
+        setOauthStatus("已在浏览器中打开授权页，完成后回到这里。");
+      } else if (message.type === "device_code") {
+        setOauthStatus(
+          `在 ${message.verificationUri ?? "设备码页面"} 输入代码 ${message.userCode ?? ""}`,
+        );
+      }
+    });
+    return () => {
+      offPrompt();
+      offNotify();
+    };
+  }, []);
 
   async function save(): Promise<void> {
     if (provider.trim().length === 0 || key.trim().length === 0) return;
@@ -973,6 +1041,33 @@ function AccountButton({
     onChanged();
   }
 
+  async function oauthLogin(providerId: string): Promise<void> {
+    setOauthStatus("启动登录…");
+    setOauthBusy(providerId);
+    const result = await window.piGui.oauthLogin(providerId);
+    setOauthBusy(null);
+    if (result.ok) {
+      if (result.check?.status === "ready") {
+        setOauthStatus(`已登录并验证通过：${providerId}`);
+      } else {
+        setOauthStatus(
+          `凭据已保存，但校验未通过：${result.check?.reason ?? result.check?.message ?? "未知"}`,
+        );
+      }
+      refreshList();
+      onChanged();
+    } else {
+      setOauthStatus(`登录失败：${result.error ?? "未知错误"}`);
+    }
+  }
+
+  function respondOauthPrompt(value: string | null): void {
+    if (oauthPrompt === null) return;
+    window.piGui.respondOAuthPrompt(oauthPrompt.id, value);
+    setOauthPrompt(null);
+    setOauthText("");
+  }
+
   return (
     <>
       <button className="btn ghost" onClick={open ? onClose : onOpen}>
@@ -984,8 +1079,34 @@ function AccountButton({
             <h2>账号与凭据</h2>
             <p className="sheet-sub">
               凭据写入 <code>~/.pi/agent/auth.json</code>（pi 自己的格式），保存后用
-              <code> pi auth check</code> 验证。OAuth 订阅登录（Claude Pro、Codex 等）在下一步。
+              <code> pi auth check</code> 验证。订阅登录直接跑 pi 自己的 OAuth 流程。
             </p>
+
+            <div className="oauth-section">
+              <div className="oauth-head">订阅登录（OAuth）</div>
+              <div className="oauth-grid">
+                {OAUTH_PROVIDERS.map((entry) => (
+                  <button
+                    key={entry.id}
+                    type="button"
+                    className="btn oauth-btn"
+                    disabled={oauthBusy !== null}
+                    onClick={() => void oauthLogin(entry.id)}
+                  >
+                    {entry.label}
+                    {oauthBusy === entry.id && "（登录中…）"}
+                  </button>
+                ))}
+              </div>
+              {oauthBusy !== null && (
+                <button className="btn ghost small" onClick={() => window.piGui.oauthCancel()}>
+                  取消登录
+                </button>
+              )}
+              {oauthStatus !== null && <p className="cred-outcome">{oauthStatus}</p>}
+            </div>
+
+            <div className="oauth-divider" />
 
             <div className="cred-list">
               {providers.length === 0 && <p className="cred-empty">还没有配置任何 provider。</p>}
@@ -1030,6 +1151,58 @@ function AccountButton({
 
             <button className="btn ghost sheet-close" onClick={onClose}>
               关闭
+            </button>
+          </div>
+        </div>
+      )}
+      {oauthPrompt !== null && (
+        <div className="sheet-mask" onClick={() => respondOauthPrompt(null)}>
+          <div className="sheet" onClick={(event) => event.stopPropagation()}>
+            <div className="ext-source">登录流程需要你确认</div>
+            <h2>{oauthPrompt.message}</h2>
+            {oauthPrompt.type === "select" && (oauthPrompt.options ?? []).length > 0 && (
+              <div className="ext-options">
+                {(oauthPrompt.options ?? []).map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    className="btn opt-row"
+                    onClick={() => respondOauthPrompt(option.id)}
+                  >
+                    <span>{option.label}</span>
+                    {option.description !== undefined && (
+                      <span className="opt-desc">{option.description}</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+            {(oauthPrompt.type === "secret" ||
+              oauthPrompt.type === "text" ||
+              oauthPrompt.type === "manual_code") && (
+              <>
+                <input
+                  autoFocus
+                  type={oauthPrompt.type === "secret" ? "password" : "text"}
+                  placeholder={oauthPrompt.placeholder ?? ""}
+                  value={oauthText}
+                  onChange={(event) => setOauthText(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") respondOauthPrompt(oauthText);
+                  }}
+                />
+                <div className="acts ext-acts">
+                  <button
+                    className="btn primary"
+                    onClick={() => respondOauthPrompt(oauthText)}
+                  >
+                    发送
+                  </button>
+                </div>
+              </>
+            )}
+            <button className="btn ghost sheet-close" onClick={() => respondOauthPrompt(null)}>
+              取消
             </button>
           </div>
         </div>
